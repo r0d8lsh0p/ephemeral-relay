@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -284,6 +285,19 @@ func runPurgeLoop(db *lmdb.LMDBBackend, cfg Config) {
 	}
 }
 
+// warnOrphanedBadgerFiles logs when DB_PATH still holds files from the
+// pre-nostrlib badger backend. lmdb ignores them, so any events inside are
+// orphaned — never served, never purged, just dead bytes. Safe to delete;
+// this relay's contents are ephemeral by design.
+func warnOrphanedBadgerFiles(path string) {
+	for _, name := range []string{"KEYREGISTRY", "DISCARD"} {
+		if _, err := os.Stat(filepath.Join(path, name)); err == nil {
+			log.Printf("WARNING: %s contains files from the old badger backend (pre-lmdb); their events are orphaned and the files can be deleted", path)
+			return
+		}
+	}
+}
+
 func main() {
 	config = loadConfig()
 
@@ -303,6 +317,7 @@ func main() {
 		relay.Info.PubKey = &pk
 	}
 
+	warnOrphanedBadgerFiles(config.DBPath)
 	db := &lmdb.LMDBBackend{Path: config.DBPath}
 	if err := db.Init(); err != nil {
 		log.Fatalf("lmdb init failed: %v", err)
