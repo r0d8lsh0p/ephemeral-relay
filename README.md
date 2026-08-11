@@ -11,7 +11,7 @@ Ephemeral Relay is a Nostr relay for temporary events. Built for content whose n
 
 The relay tells clients its policy itself. Its NIP-11 description is generated from your acceptance and retention settings, so you don't have to trust a README:
 
-`Accepts kinds 0,5,7,16,1311,1312,1313,9735 only. All events except kinds 0 are deleted after 3h0m0s.`
+`Accepts kinds 0,5,7,16,1311,9735,10312 only. All events except kinds 0 are deleted after 3h0m0s.`
 
 ## The life of an event
 
@@ -56,23 +56,20 @@ With docker and [nak](https://github.com/fiatjaf/nak):
 docker compose up -d --build   # relay on ws://localhost:7448
 
 # publish a chat message that expires in 30 seconds
-nak event -k 1311 -c "I am mortal" -t expiration=$(($(date +%s)+30)) ws://localhost:7448
+nak event -k 1311 -c "I will expire" -t expiration=$(($(date +%s)+30)) ws://localhost:7448
 
 nak req -k 1311 ws://localhost:7448   # there it is
 sleep 30
 nak req -k 1311 ws://localhost:7448   # gone
-
-nak event -k 1 -c "a permanent note" ws://localhost:7448
-# "blocked: received event kind 1 not allowed"
 ```
 
 ## Use Cases
 
 - **Live stream chat**: chat messages, reactions, reposts and zap receipts live for the duration of a show and then scroll away, like chat is supposed to.
-- **Bridged content**: colocate with a bridge that republishes users from another platform; stamp its events with `expiration` and `-` and the transience promise holds even beyond this relay.
+- **Bridged content**: colocate with a bridge that republishes users from another platform; stamp its events with `expiration` and `-` to enforce transience across an honest network.
 - **Ephemeral notice boards**: announcements, presence, status — anywhere stale content is worse than no content.
 
-The default kind set is live-chat flavoured, but like WoT Relay's archived kinds, **it's entirely yours to configure** — set `ALLOWED_KINDS` to whatever your use case needs. The only opinion this relay keeps is that things expire.
+The default kind set is live-chat flavoured, but **it's entirely yours to configure** — set `ALLOWED_KINDS` to whatever your use case needs. The only opinion this relay keeps is that things expire.
 
 ## Prerequisites
 
@@ -98,7 +95,7 @@ cp .env.example .env
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ALLOWED_KINDS` | `0,5,7,16,1311,1312,1313,9735` | Only these kinds are accepted — configure for your use case |
+| `ALLOWED_KINDS` | `0,5,7,16,1311,9735,10312` | Only these kinds are accepted — configure for your use case |
 | `RETENTION_SECONDS` | `10800` (3 h) | Events older than this are hard-deleted |
 | `PURGE_INTERVAL_SECONDS` | `600` | How often the deletion sweep runs |
 | `RETENTION_EXEMPT_KINDS` | `0` | Kinds kept indefinitely (profiles by default) |

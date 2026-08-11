@@ -5,7 +5,7 @@ services:
       - '7448:3335'
     environment:
       RELAY_NAME: ephemeral relay (local)
-      ALLOWED_KINDS: '0,5,7,16,1311,1312,1313,9735'
+      ALLOWED_KINDS: '0,5,7,16,1311,9735,10312'
       RETENTION_SECONDS: '10800'
       PURGE_INTERVAL_SECONDS: '600'
       RETENTION_EXEMPT_KINDS: '0'

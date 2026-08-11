@@ -95,7 +95,7 @@ func loadConfig() Config {
 		RelayContact:     env("RELAY_CONTACT", ""),
 		Port:             env("PORT", "3335"),
 		DBPath:           env("DB_PATH", "db/"),
-		AllowedKinds:     envKinds("ALLOWED_KINDS", "0,5,7,16,1311,1312,1313,9735"),
+		AllowedKinds:     envKinds("ALLOWED_KINDS", "0,5,7,16,1311,9735,10312"),
 		RetentionSecs:    envInt("RETENTION_SECONDS", 3*60*60),
 		PurgeIntervalSec: envInt("PURGE_INTERVAL_SECONDS", 10*60),
 		ExemptKinds:      envKinds("RETENTION_EXEMPT_KINDS", "0"),
