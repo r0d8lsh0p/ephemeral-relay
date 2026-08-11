@@ -29,13 +29,13 @@ flowchart LR
 
 ## Protected three ways
 
-The posture is **ephemeral, restricted, anti-gossip**. For content that must not outlive its moment — say, chat bridged from users on another platform who never signed up for permanent, globally-replicated speech — three mechanisms stack:
+The posture of this relay is **ephemeral, anti-gossip**. For content that must not outlive its moment — say, chat bridged from users on another platform who never signed up for permanent, globally-replicated speech. It is intended to be used together with events holding NIP-40 and NIP-70 tags.
 
-1. **Blanket TTL** — the relay hard-deletes every retained-kind event after `RETENTION_SECONDS`, tag or no tag. This is the guarantee that depends on nothing the author did.
-2. **NIP-40 expiration** — an `["expiration", "<unix>"]` tag travels *inside the signed event*, so even if a copy escapes to other relays, honest ones delete it on schedule. Here it's fully honoured: already-expired events are rejected, expired events vanish from queries at the exact second, and the sweep hard-deletes them.
-3. **NIP-70 protected events** — a `["-"]` tag means only the event's author, authenticated via NIP-42, can publish it *anywhere*. Honest relays refuse rebroadcasts outright, because a third party can never authenticate as the author. Enforced here by khatru core.
+1. **Blanket TTL** — the relay hard-deletes every retained-kind event after `RETENTION_SECONDS`.
+2. **NIP-40 expiration** — the relay respects NIP-40 expiration times, and recommends it, so that even if a copy escapes to other relays, honest ones delete it on schedule.
+3. **NIP-70 protected events** — the relay respects NIP-70 protected events, and recommends them, so that an honest relay will not accept the event from anyone but its author — a rebroadcast copy is never stored at all.
 
-Publish with all three and redistribution requires a *dishonest* relay — and even then the expiration keeps working on every honest hop downstream.
+The ephemeral anti-gossip posture is that this relay will delete events after RETENTION_SECONDS, and that all other honest relays should not store the events at all (NIP-70), and should delete them at expiry if stored (NIP-40).
 
 ## Why this relay
 
