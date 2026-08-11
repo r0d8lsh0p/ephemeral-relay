@@ -74,7 +74,7 @@ The default kind set is live-chat flavoured, but **it's entirely yours to config
 ## Prerequisites
 
 - **Go**: Ensure you have Go installed on your system. You can download it from [here](https://golang.org/dl/).
-- **Build Essentials**: If you're using Linux, you may need to install build essentials. You can do this by running `sudo apt install build-essential`.
+- **Build Essentials**: a C compiler is required (the LMDB storage backend uses cgo). On Linux: `sudo apt install build-essential`.
 
 ## Setup Instructions
 

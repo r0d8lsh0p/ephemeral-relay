@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"fiatjaf.com/nostr"
@@ -31,6 +32,10 @@ import (
 // the sweep hard-deletes them on the configured cadence.
 
 const purgeBatchSize = 1000
+
+// maxQueryLimit caps client REQ results (matches the old badger default),
+// deliberately separate from purgeBatchSize so tuning one can't change the other.
+const maxQueryLimit = 500
 
 type Config struct {
 	RelayName        string
@@ -145,26 +150,77 @@ func joinKinds(kinds []nostr.Kind) string {
 	return strings.Join(parts, ",")
 }
 
-// rateLimitUntrusted applies the per-IP event rate limit, exempting trusted
-// IPs — our own bridge funnels 50+ streams' chat through one egress and must
-// not be throttled like a single anonymous client.
+// rateLimitUntrusted applies a per-IP token-bucket write limit, exempting
+// trusted IPs — our own bridge funnels 50+ streams' chat through one egress
+// and must not be throttled like a single anonymous client.
+//
+// Implemented locally rather than with policies.EventIPRateLimiter because
+// nostrlib's limiter hardcodes a localhost exemption; here only TRUSTED_IPS
+// are exempt, so a same-host proxy cannot accidentally unmeter its clients.
 func rateLimitUntrusted(cfg Config) func(ctx context.Context, event nostr.Event) (bool, string) {
-	limiter := policies.EventIPRateLimiter(int(cfg.RateLimitPerSec), time.Second, int(cfg.RateLimitBurst))
 	trusted := make(map[string]bool, len(cfg.TrustedIPs))
 	for _, ip := range cfg.TrustedIPs {
 		trusted[ip] = true
 	}
+
+	type bucket struct {
+		tokens float64
+		last   time.Time
+	}
+	var mu sync.Mutex
+	buckets := make(map[string]*bucket)
+	rate := float64(cfg.RateLimitPerSec)
+	burst := float64(cfg.RateLimitBurst)
+
 	return func(ctx context.Context, event nostr.Event) (bool, string) {
-		if trusted[khatru.GetIP(ctx)] {
+		ip := khatru.GetIP(ctx)
+		if trusted[ip] {
 			return false, ""
 		}
-		return limiter(ctx, event)
+		mu.Lock()
+		defer mu.Unlock()
+		now := time.Now()
+		if len(buckets) > 10000 { // bound memory under address-diverse floods
+			for k, b := range buckets {
+				if now.Sub(b.last) > 10*time.Minute {
+					delete(buckets, k)
+				}
+			}
+		}
+		b := buckets[ip]
+		if b == nil {
+			b = &bucket{tokens: burst, last: now}
+			buckets[ip] = b
+		}
+		b.tokens = min(burst, b.tokens+now.Sub(b.last).Seconds()*rate)
+		b.last = now
+		if b.tokens < 1 {
+			return true, "rate-limited: too many events"
+		}
+		b.tokens--
+		return false, ""
+	}
+}
+
+// preventLargeTags restores the old khatru PreventLargeTags guard, which
+// nostrlib no longer ships: indexable (single-letter) tag values are capped
+// so oversized values cannot bloat the store's tag indexes.
+func preventLargeTags(maxTagValueLen int) func(ctx context.Context, event nostr.Event) (bool, string) {
+	return func(ctx context.Context, event nostr.Event) (bool, string) {
+		for _, tag := range event.Tags {
+			if len(tag) >= 2 && len(tag[0]) == 1 && len(tag[1]) > maxTagValueLen {
+				return true, "event contains too large tags"
+			}
+		}
+		return false, ""
 	}
 }
 
 func isExpired(evt nostr.Event, now nostr.Timestamp) bool {
+	// GetExpiration returns -1 when the tag is missing or unparseable; an
+	// explicit "0" (or any past timestamp) counts as expired, as before.
 	exp := nip40.GetExpiration(evt.Tags)
-	return exp > 0 && exp <= now
+	return exp >= 0 && exp <= now
 }
 
 // rejectExpired refuses events that arrive already past their NIP-40
@@ -323,13 +379,16 @@ func main() {
 		log.Fatalf("lmdb init failed: %v", err)
 	}
 
-	relay.UseEventstore(db, purgeBatchSize)
+	// Note: NIP-45 COUNT (wired by UseEventstore) counts the raw store, so a
+	// count may briefly include expired-but-unswept events that a REQ hides.
+	relay.UseEventstore(db, maxQueryLimit)
 	relay.QueryStored = filterExpired(relay.QueryStored)
 
 	relay.OnEvent = policies.SeqEvent(
 		policies.RestrictToSpecifiedKinds(false, config.AllowedKinds...),
 		rejectExpired,
 		policies.PreventLargeContent(65535),
+		preventLargeTags(200),
 		policies.PreventTimestampsInThePast(2*time.Hour),
 		policies.PreventTimestampsInTheFuture(30*time.Minute),
 		rateLimitUntrusted(config),
