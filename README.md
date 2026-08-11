@@ -3,7 +3,7 @@
 **Events are not forever.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/go-1.23+-00ADD8.svg?logo=go)](https://golang.org/dl/)
+[![Go](https://img.shields.io/badge/go-1.25+-00ADD8.svg?logo=go)](https://golang.org/dl/)
 [![Built on khatru](https://img.shields.io/badge/built%20on-khatru-purple.svg)](https://khatru.nostr.technology)
 [![NIPs](https://img.shields.io/badge/NIPs-11%20·%2040%20·%2042%20·%2070-lightgrey.svg)](https://github.com/nostr-protocol/nips)
 
@@ -102,7 +102,7 @@ cp .env.example .env
 | `RATE_LIMIT_EVENTS_PER_SEC` / `RATE_LIMIT_BURST` | `10` / `50` | Per-IP write rate limit |
 | `TRUSTED_IPS` | — | IPs exempt from the rate limit |
 | `PORT` | `3335` | Listen port |
-| `DB_PATH` | `db/` | Badger database path |
+| `DB_PATH` | `db/` | LMDB database path |
 | `RELAY_NAME` / `RELAY_PUBKEY` / `RELAY_ICON` / `RELAY_CONTACT` / `RELAY_DESCRIPTION` | — | NIP-11 identity (description auto-generated from retention settings unless set) |
 
 Some values are fixed on purpose:

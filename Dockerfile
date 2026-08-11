@@ -1,11 +1,12 @@
-FROM golang:1.23-alpine AS build
+FROM golang:1.25-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /ephemeral-relay .
+# CGO stays on: the lmdb eventstore backend (PowerDNS/lmdb-go) requires it.
+RUN go build -o /ephemeral-relay .
 
-FROM alpine:3.20
+FROM debian:bookworm-slim
 WORKDIR /app
 COPY --from=build /ephemeral-relay /app/ephemeral-relay
 ENV DB_PATH=/app/db
