@@ -1,29 +1,30 @@
 # Ephemeral Relay
 
-**Nothing here is forever.**
+**Nothing is forever.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.23+-00ADD8.svg?logo=go)](https://golang.org/dl/)
 [![Built on khatru](https://img.shields.io/badge/built%20on-khatru-purple.svg)](https://khatru.nostr.technology)
 [![NIPs](https://img.shields.io/badge/NIPs-11%20·%2040%20·%2042%20·%2070-lightgrey.svg)](https://github.com/nostr-protocol/nips)
 
-Ephemeral Relay is a nostr relay that accepts only the event kinds you configure and deletes everything past a fixed age. Built for content whose natural lifetime is hours, not years — live-stream chat, bridged messages, presence — on the [Khatru](https://khatru.nostr.technology) framework.
+Ephemeral Relay is a Nostr relay for temporary events. Built for content whose natural lifetime is hours, not years — e.g. live-stream chat, bridged messages, presence — built on the [Khatru](https://khatru.nostr.technology) framework.
 
-The relay tells clients its policy itself. Its NIP-11 description is generated from your retention settings, so you don't have to trust a README:
+The relay tells clients its policy itself. Its NIP-11 description is generated from your acceptance and retention settings, so you don't have to trust a README:
 
-> Accepts kinds 0,5,7,16,1311,1312,1313,9735 only. All events except kinds 0 are deleted after 3h0m0s.
+`Accepts kinds 0,5,7,16,1311,1312,1313,9735 only. All events except kinds 0 are deleted after 3h0m0s.`
 
 ## The life of an event
 
 ```mermaid
 flowchart LR
     A([EVENT arrives]) -->|kind not in ALLOWED_KINDS| X([rejected])
-    A -->|NIP-40 tag already expired| X
+    A -->|NIP-40 tag expired| X
     A -->|NIP-70 “-” tag, sender not authed as author| X
     A --> S[(stored & served)]
-    S -->|NIP-40 expiration passes| H[hidden from queries<br/>at the exact second] --> D([hard-deleted by sweep])
+    S -->|NIP-40 expiration passes| H[hidden from queries] --> D([deleted by sweep])
     S -->|older than RETENTION_SECONDS| D
     S -.->|kind in RETENTION_EXEMPT_KINDS| K([kept indefinitely])
+    H ~~~ K
 ```
 
 ## Protected three ways
