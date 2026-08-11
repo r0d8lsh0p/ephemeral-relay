@@ -41,12 +41,12 @@ The ephemeral anti-gossip posture is that this relay will delete events after RE
 
 No off-the-shelf relay combined these (as of mid-2026):
 
-| | [nostr-rs-relay](https://github.com/scsibug/nostr-rs-relay) | [strfry](https://github.com/hoytech/strfry) | [SW2](https://github.com/bitvora/sw2) / [WoT Relay](https://github.com/bitvora/wot-relay) (khatru) | **Ephemeral Relay** |
+| | [nostr-rs-relay](https://github.com/scsibug/nostr-rs-relay) | [strfry](https://github.com/hoytech/strfry) | [WoT Relay](https://github.com/bitvora/wot-relay) (khatru) | **Ephemeral Relay** |
 |---|:---:|:---:|:---:|:---:|
-| kind allowlist | ✅ | plugin | ❌ | ✅ |
-| age-based retention | ❌ | ephemeral kinds only | WoT: days-grain | ✅ |
-| NIP-40 honoured | ✅ | ✅ | ❌ | ✅ |
-| NIP-70 enforced | ❌ | ✅ | ✅ | ✅ |
+| Age-based retention | — | — | Days-grain | ✅ |
+| Kind allowlist | ✅ | Plugin | — | ✅ |
+| NIP-40 honoured | ✅ | ✅ | — | ✅ |
+| NIP-70 enforced | — | ✅ | ✅ | ✅ |
 
 ## Prove it in 60 seconds
 
