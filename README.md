@@ -11,7 +11,7 @@ Ephemeral Relay is a Nostr relay for temporary events. Built for content whose n
 
 The relay tells clients its policy itself. Its NIP-11 description is generated from your acceptance and retention settings, so you don't have to trust a README:
 
-`Accepts kinds 0,5,7,16,1311,9735,10312 only. All events except kinds 0 are deleted after 3h0m0s.`
+`Accepts kinds 0,5,7,16,1311,1312,1313,9735,10312 only. All events except kinds 0 are deleted after 3h0m0s.`
 
 ## The life of an event
 
@@ -95,7 +95,7 @@ cp .env.example .env
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ALLOWED_KINDS` | `0,5,7,16,1311,9735,10312` | Only these kinds are accepted — configure for your use case |
+| `ALLOWED_KINDS` | `0,5,7,16,1311,1312,1313,9735,10312` | Only these kinds are accepted — configure for your use case |
 | `RETENTION_SECONDS` | `10800` (3 h) | Events older than this are hard-deleted |
 | `PURGE_INTERVAL_SECONDS` | `600` | How often the deletion sweep runs |
 | `RETENTION_EXEMPT_KINDS` | `0` | Kinds kept indefinitely (profiles by default) |
