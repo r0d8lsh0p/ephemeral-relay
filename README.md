@@ -29,7 +29,7 @@ flowchart LR
 
 ## Protected three ways
 
-The posture of this relay is **ephemeral, anti-gossip**. For content that must not outlive its moment — say, chat bridged from users on another platform who never signed up for permanent, globally-replicated speech. It is intended to be used together with events holding NIP-40 and NIP-70 tags.
+The posture of this relay is **ephemeral, limited, anti-gossip**. For content that must not outlive its moment — say, chat bridged from users on another platform who never signed up for permanent, globally-replicated speech. It is intended to be used together with events holding NIP-40 and NIP-70 tags.
 
 1. **Blanket TTL** — the relay hard-deletes every retained-kind event after `RETENTION_SECONDS`.
 2. **NIP-40 expiration** — the relay respects NIP-40 expiration times, and recommends it, so that even if a copy escapes to other relays, honest ones delete it on schedule.
@@ -95,7 +95,7 @@ cp .env.example .env
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ALLOWED_KINDS` | `0,5,7,16,1311,1312,1313,9735,10312` | Only these kinds are accepted — configure for your use case |
+| `ALLOWED_KINDS` | `0,5,7,16,1311,1312,1313,9735,10312` | Only these kinds are accepted — configure for your use case. Default covers profiles, deletions, reactions, reposts, live chat / raids / clips (1311/1312/1313, per [zap.stream](https://github.com/v0l/zap.stream)), zap receipts, and NIP-53 room presence |
 | `RETENTION_SECONDS` | `10800` (3 h) | Events older than this are hard-deleted |
 | `PURGE_INTERVAL_SECONDS` | `600` | How often the deletion sweep runs |
 | `RETENTION_EXEMPT_KINDS` | `0` | Kinds kept indefinitely (profiles by default) |
@@ -109,10 +109,8 @@ Some values are fixed on purpose:
 
 | Fixed | Value | Why it isn't an env var |
 |---|---|---|
-| Ephemeral-range wildcard | off | khatru's kind policy can blanket-admit all of NIP-01's ephemeral range (20000–29999); that would undercut the *restricted* posture. Want a specific ephemeral kind? Put its number in `ALLOWED_KINDS`. |
-| Timestamp sanity window | 2 h past / 30 min future | Events dated outside this window are rejected; on a relay where age is deletion, backdating is an escape hatch worth closing. |
-| Purge batch size | 1000 | Operational tuning with no user-visible effect — sweeps loop until done regardless. |
-| Rate-limit interval | per second | The unit is part of `RATE_LIMIT_EVENTS_PER_SEC`'s contract. |
+| Ephemeral-range wildcard | off | khatru's kind policy can blanket-admit all of NIP-01's ephemeral range (20000–29999); that would undercut the *limited* posture. Want a specific ephemeral kind? Put its number in `ALLOWED_KINDS`. |
+| Timestamp sanity window | 2 h past / 30 min future | Events dated outside this window are rejected so that back-dating or forward-dating cannot be used to avoid deletion. |
 
 > [!NOTE]
 > The expected use of `TRUSTED_IPS` is colocating this relay with a **bridge**: a bridge funnels many streams' chat through a single egress IP and would otherwise be throttled like one anonymous client. On a platform like Railway, run relay and bridge in the same project and whitelist the bridge's private-network address.
