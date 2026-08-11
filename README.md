@@ -107,6 +107,15 @@ cp .env.example .env
 | `DB_PATH` | `db/` | Badger database path |
 | `RELAY_NAME` / `RELAY_PUBKEY` / `RELAY_ICON` / `RELAY_CONTACT` / `RELAY_DESCRIPTION` | — | NIP-11 identity (description auto-generated from retention settings unless set) |
 
+Some values are fixed on purpose:
+
+| Fixed | Value | Why it isn't an env var |
+|---|---|---|
+| Ephemeral-range wildcard | off | khatru's kind policy can blanket-admit all of NIP-01's ephemeral range (20000–29999); that would undercut the *restricted* posture. Want a specific ephemeral kind? Put its number in `ALLOWED_KINDS`. |
+| Timestamp sanity window | 2 h past / 30 min future | Events dated outside this window are rejected; on a relay where age is deletion, backdating is an escape hatch worth closing. |
+| Purge batch size | 1000 | Operational tuning with no user-visible effect — sweeps loop until done regardless. |
+| Rate-limit interval | per second | The unit is part of `RATE_LIMIT_EVENTS_PER_SEC`'s contract. |
+
 > [!NOTE]
 > The expected use of `TRUSTED_IPS` is colocating this relay with a **bridge**: a bridge funnels many streams' chat through a single egress IP and would otherwise be throttled like one anonymous client. On a platform like Railway, run relay and bridge in the same project and whitelist the bridge's private-network address.
 
