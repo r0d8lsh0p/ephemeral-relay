@@ -58,9 +58,29 @@ go run ./e2e -relay ws://localhost:3336 -retention 8
 Checks: kind 1 rejected; kind 1311 accepted and served; after the retention
 window the 1311 is purged while a kind 0 profile survives.
 
-## Why not NIP-40?
+Additional modes:
 
-NIP-40 expiration tags put the lifetime decision in each event author's hands.
-For a relay whose *contract* is transience — everything here is short-lived,
-say so up front — blanket kind-scoped retention is simpler and stronger: no
-tag to remember, no compliant-client dependency, one uniform guarantee.
+```bash
+go run ./e2e -relay ws://localhost:3336 -nip40 -ttl 180   # NIP-40: short-TTL event dies on time, control survives
+go run ./e2e -relay ws://localhost:3336 -burst-only        # rate limiter bites an untrusted burst
+go run ./e2e -relay ws://localhost:3336 -burst-only -burst-trusted  # TRUSTED_IPS bypass takes the full volley
+```
+
+## Retention model: blanket age purge + NIP-40
+
+Two lifetime mechanisms compose:
+
+1. **Blanket retention** (the relay's contract): every retained-kind event is
+   hard-deleted after `RETENTION_SECONDS`, tag or no tag. This is the
+   guarantee — it depends on nothing the author did.
+2. **NIP-40 expiration** (the author's choice): an event carrying an
+   `["expiration", "<unix>"]` tag can die *sooner* than the blanket window.
+   Fully honoured:
+   - already-expired events are rejected at publish
+   - expired events are never served, from the second they lapse
+     (query-time filter, independent of sweep timing)
+   - the periodic sweep hard-deletes them from the store
+
+Events cannot outlive the blanket window via NIP-40 — a distant expiration
+does not exempt an event from `RETENTION_SECONDS`. The tag can only shorten a
+life, never extend it.

@@ -154,6 +154,61 @@ func joinKinds(kinds []uint16) string {
 	return strings.Join(parts, ",")
 }
 
+// expirationOf returns the NIP-40 expiration timestamp, if the event carries
+// a valid one.
+func expirationOf(evt *nostr.Event) (nostr.Timestamp, bool) {
+	tag := evt.Tags.GetFirst([]string{"expiration"})
+	if tag == nil || len(*tag) < 2 {
+		return 0, false
+	}
+	ts, err := strconv.ParseInt((*tag)[1], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return nostr.Timestamp(ts), true
+}
+
+func isExpired(evt *nostr.Event, now nostr.Timestamp) bool {
+	exp, ok := expirationOf(evt)
+	return ok && exp <= now
+}
+
+// rejectExpired refuses events that arrive already past their NIP-40
+// expiration.
+func rejectExpired(ctx context.Context, evt *nostr.Event) (bool, string) {
+	if isExpired(evt, nostr.Now()) {
+		return true, "invalid: event is already expired (NIP-40)"
+	}
+	return false, ""
+}
+
+// filterExpired wraps a store's QueryEvents so expired events are never
+// served, regardless of when the deletion sweep last ran.
+func filterExpired(query func(context.Context, nostr.Filter) (chan *nostr.Event, error)) func(context.Context, nostr.Filter) (chan *nostr.Event, error) {
+	return func(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
+		ch, err := query(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
+		out := make(chan *nostr.Event)
+		go func() {
+			defer close(out)
+			now := nostr.Now()
+			for evt := range ch {
+				if isExpired(evt, now) {
+					continue
+				}
+				select {
+				case out <- evt:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+		return out, nil
+	}
+}
+
 // retainedKinds returns the kinds subject to the age purge: allowed minus exempt.
 func retainedKinds(cfg Config) []int {
 	exempt := make(map[uint16]bool, len(cfg.ExemptKinds))
@@ -169,7 +224,10 @@ func retainedKinds(cfg Config) []int {
 	return kinds
 }
 
-func purgeOldEvents(relay *khatru.Relay, cfg Config) {
+// purgeOldEvents hard-deletes retained-kind events past the age cutoff.
+// Queries the store directly (not the relay hooks) so that the expired-event
+// query filter cannot hide anything from the sweep.
+func purgeOldEvents(db *badger.BadgerBackend, cfg Config) {
 	ctx := context.TODO()
 	cutoff := nostr.Timestamp(time.Now().Unix() - cfg.RetentionSecs)
 	kinds := retainedKinds(cfg)
@@ -180,17 +238,15 @@ func purgeOldEvents(relay *khatru.Relay, cfg Config) {
 			Kinds: kinds,
 			Limit: 1000, // batches, to bound memory
 		}
-		ch, err := relay.QueryEvents[0](ctx, filter)
+		ch, err := db.QueryEvents(ctx, filter)
 		if err != nil {
 			log.Printf("purge query failed: %v", err)
 			return
 		}
 		count := 0
 		for evt := range ch {
-			for _, del := range relay.DeleteEvent {
-				if err := del(ctx, evt); err != nil {
-					log.Printf("purge delete %s failed: %v", evt.ID, err)
-				}
+			if err := db.DeleteEvent(ctx, evt); err != nil {
+				log.Printf("purge delete %s failed: %v", evt.ID, err)
 			}
 			count++
 		}
@@ -203,11 +259,60 @@ func purgeOldEvents(relay *khatru.Relay, cfg Config) {
 	}
 }
 
-func runPurgeLoop(relay *khatru.Relay, cfg Config) {
+// purgeExpiredEvents hard-deletes events whose NIP-40 expiration has passed,
+// whatever their kind or age. Walks the store in created_at-descending batches;
+// the whole store is at most a retention window of chat, so this stays cheap.
+func purgeExpiredEvents(db *badger.BadgerBackend, cfg Config) {
+	ctx := context.TODO()
+	now := nostr.Now()
+	until := now
+	allKinds := make([]int, len(cfg.AllowedKinds))
+	for i, k := range cfg.AllowedKinds {
+		allKinds[i] = int(k)
+	}
+
+	for {
+		filter := nostr.Filter{
+			Until: &until,
+			Kinds: allKinds,
+			Limit: 1000,
+		}
+		ch, err := db.QueryEvents(ctx, filter)
+		if err != nil {
+			log.Printf("expiry sweep query failed: %v", err)
+			return
+		}
+		count, deleted := 0, 0
+		oldest := until
+		for evt := range ch {
+			if evt.CreatedAt < oldest {
+				oldest = evt.CreatedAt
+			}
+			if isExpired(evt, now) {
+				if err := db.DeleteEvent(ctx, evt); err != nil {
+					log.Printf("expiry delete %s failed: %v", evt.ID, err)
+				} else {
+					deleted++
+				}
+			}
+			count++
+		}
+		if deleted > 0 {
+			log.Printf("purged %d expired events (NIP-40)", deleted)
+		}
+		if count < 1000 || oldest >= until {
+			return
+		}
+		until = oldest - 1
+	}
+}
+
+func runPurgeLoop(db *badger.BadgerBackend, cfg Config) {
 	ticker := time.NewTicker(time.Duration(cfg.PurgeIntervalSec) * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		purgeOldEvents(relay, cfg)
+		purgeOldEvents(db, cfg)
+		purgeExpiredEvents(db, cfg)
 	}
 }
 
@@ -220,7 +325,8 @@ func main() {
 	relay.Info.Description = config.RelayDescription
 	relay.Info.Icon = config.RelayIcon
 	relay.Info.Software = "https://github.com/r0d8lsh0p/ephemeral-relay"
-	relay.Info.Version = "0.1.0"
+	relay.Info.Version = "0.2.0"
+	relay.Info.AddSupportedNIP(40)
 
 	db := badger.BadgerBackend{Path: config.DBPath}
 	if err := db.Init(); err != nil {
@@ -228,19 +334,21 @@ func main() {
 	}
 
 	relay.StoreEvent = append(relay.StoreEvent, db.SaveEvent)
-	relay.QueryEvents = append(relay.QueryEvents, db.QueryEvents)
+	relay.QueryEvents = append(relay.QueryEvents, filterExpired(db.QueryEvents))
 	relay.DeleteEvent = append(relay.DeleteEvent, db.DeleteEvent)
 
 	relay.RejectEvent = append(relay.RejectEvent,
 		policies.RestrictToSpecifiedKinds(false, config.AllowedKinds...),
+		rejectExpired,
 		policies.PreventLargeTags(200),
 		policies.PreventTimestampsInThePast(2*time.Hour),
 		policies.PreventTimestampsInTheFuture(30*time.Minute),
 		rateLimitUntrusted(config),
 	)
 
-	purgeOldEvents(relay, config) // clear backlog before serving
-	go runPurgeLoop(relay, config)
+	purgeOldEvents(&db, config) // clear backlog before serving
+	purgeExpiredEvents(&db, config)
+	go runPurgeLoop(&db, config)
 
 	log.Printf("ephemeral-relay on :%s — kinds %s, retention %ds (exempt %s)",
 		config.Port, joinKinds(config.AllowedKinds), config.RetentionSecs, joinKinds(config.ExemptKinds))

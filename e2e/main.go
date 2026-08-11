@@ -79,10 +79,19 @@ func main() {
 	retention := flag.Int("retention", 8, "relay's RETENTION_SECONDS (test waits past it)")
 	burstOnly := flag.Bool("burst-only", false, "only run the rate-limit burst check")
 	burstTrusted := flag.Bool("burst-trusted", false, "expect the burst to fully succeed (our IP is in TRUSTED_IPS)")
+	nip40 := flag.Bool("nip40", false, "only run the NIP-40 expiration check")
+	ttl := flag.Int("ttl", 180, "NIP-40 TTL in seconds for the expiring event")
 	flag.Parse()
 
 	if *burstOnly {
 		runBurstCheck(*url, *burstTrusted)
+		if failures > 0 {
+			os.Exit(1)
+		}
+		return
+	}
+	if *nip40 {
+		runNip40Check(*url, *ttl)
 		if failures > 0 {
 			os.Exit(1)
 		}
@@ -134,6 +143,63 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("\nall checks passed")
+}
+
+// runNip40Check publishes a 1311 with a short NIP-40 TTL and a control 1311
+// without one, then polls until the expiring event vanishes while the control
+// must survive. Also verifies an already-expired event is rejected outright.
+// Run against a relay whose RETENTION_SECONDS comfortably exceeds the TTL so
+// the age purge cannot be what deletes the event.
+func runNip40Check(url string, ttlSecs int) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(ttlSecs)*time.Second+3*time.Minute)
+	defer cancel()
+
+	sk := nostr.GeneratePrivateKey()
+	pk, _ := nostr.GetPublicKey(sk)
+	expiry := time.Now().Add(time.Duration(ttlSecs) * time.Second).Unix()
+
+	// already-expired events must be refused at the door
+	_, err := publish(ctx, url, sk, 1311, "born dead",
+		nostr.Tags{{"a", "30311:deadbeef:nip40-stream"}, {"expiration", fmt.Sprintf("%d", time.Now().Unix()-60)}})
+	check("pre-expired event rejected", err != nil && strings.Contains(err.Error(), "expired"),
+		fmt.Sprintf("expected expiry rejection, got %v", err))
+
+	expiringID, err := publish(ctx, url, sk, 1311, "I am mortal",
+		nostr.Tags{{"a", "30311:deadbeef:nip40-stream"}, {"expiration", fmt.Sprintf("%d", expiry)}})
+	check("expiring 1311 accepted", err == nil, fmt.Sprintf("publish failed: %v", err))
+
+	controlID, err := publish(ctx, url, sk, 1311, "I am the control",
+		nostr.Tags{{"a", "30311:deadbeef:nip40-stream"}})
+	check("control 1311 accepted", err == nil, fmt.Sprintf("publish failed: %v", err))
+
+	ids, err := queryIDs(ctx, url, nostr.Filter{Authors: []string{pk}})
+	if err != nil {
+		log.Fatalf("query failed: %v", err)
+	}
+	check("expiring event served before TTL", ids[expiringID], "expiring event missing pre-TTL")
+	check("control served", ids[controlID], "control missing")
+
+	// poll until the expiring event disappears
+	fmt.Printf("...polling every 10s for the %ds TTL to lapse...\n", ttlSecs)
+	deadline := time.Now().Add(time.Duration(ttlSecs)*time.Second + 2*time.Minute)
+	gone := false
+	for time.Now().Before(deadline) {
+		time.Sleep(10 * time.Second)
+		ids, err = queryIDs(ctx, url, nostr.Filter{Authors: []string{pk}})
+		if err != nil {
+			log.Fatalf("poll query failed: %v", err)
+		}
+		elapsed := time.Until(time.Unix(expiry, 0)) * -1
+		fmt.Printf("   t%+ds: expiring=%v control=%v\n", int(elapsed.Seconds()), ids[expiringID], ids[controlID])
+		if !ids[expiringID] {
+			gone = true
+			check("expiring event gone no earlier than its TTL", time.Now().Unix() >= expiry,
+				"event vanished before its expiration time")
+			break
+		}
+	}
+	check("expiring event deleted after TTL", gone, "event still served 2m past expiry")
+	check("control survives", ids[controlID], "control was deleted — NIP-40 sweep overreached")
 }
 
 // runBurstCheck publishes 80 chat events as fast as possible over one
