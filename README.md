@@ -23,6 +23,8 @@ Via environment or `.env` (see `.env.example`):
 | `RETENTION_SECONDS` | `10800` (3 h) | Events older than this are deleted |
 | `PURGE_INTERVAL_SECONDS` | `600` | How often the purge runs |
 | `RETENTION_EXEMPT_KINDS` | `0` | Kinds kept indefinitely |
+| `RATE_LIMIT_EVENTS_PER_SEC` / `RATE_LIMIT_BURST` | `10` / `50` | Per-IP write rate limit |
+| `TRUSTED_IPS` | — | IPs exempt from the rate limit (e.g. a bridge fanning many streams through one egress) |
 | `PORT` | `3335` | Listen port |
 | `DB_PATH` | `db/` | Badger storage path |
 | `RELAY_NAME` / `RELAY_PUBKEY` / `RELAY_ICON` / `RELAY_DESCRIPTION` | — | NIP-11 identity |

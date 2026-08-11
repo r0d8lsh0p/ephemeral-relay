@@ -77,7 +77,17 @@ func queryIDs(ctx context.Context, url string, filter nostr.Filter) (map[string]
 func main() {
 	url := flag.String("relay", "ws://localhost:3335", "relay websocket URL")
 	retention := flag.Int("retention", 8, "relay's RETENTION_SECONDS (test waits past it)")
+	burstOnly := flag.Bool("burst-only", false, "only run the rate-limit burst check")
+	burstTrusted := flag.Bool("burst-trusted", false, "expect the burst to fully succeed (our IP is in TRUSTED_IPS)")
 	flag.Parse()
+
+	if *burstOnly {
+		runBurstCheck(*url, *burstTrusted)
+		if failures > 0 {
+			os.Exit(1)
+		}
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -124,4 +134,47 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("\nall checks passed")
+}
+
+// runBurstCheck publishes 80 chat events as fast as possible over one
+// connection — simulating the bridge's single egress fanning in 50+ streams'
+// chat. Trusted mode expects zero rejections; untrusted expects the limiter
+// to bite (default burst allowance is 50).
+func runBurstCheck(url string, expectAllAccepted bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	relay, err := nostr.RelayConnect(ctx, url)
+	if err != nil {
+		log.Fatalf("connect failed: %v", err)
+	}
+	defer relay.Close()
+
+	sk := nostr.GeneratePrivateKey()
+	pub, _ := nostr.GetPublicKey(sk)
+	accepted, rejected := 0, 0
+	for i := 0; i < 80; i++ {
+		evt := nostr.Event{
+			PubKey:    pub,
+			CreatedAt: nostr.Now(),
+			Kind:      1311,
+			Tags:      nostr.Tags{{"a", "30311:deadbeef:burst-stream"}},
+			Content:   fmt.Sprintf("burst message %d", i),
+		}
+		if err := evt.Sign(sk); err != nil {
+			log.Fatalf("sign failed: %v", err)
+		}
+		if err := relay.Publish(ctx, evt); err != nil {
+			rejected++
+		} else {
+			accepted++
+		}
+	}
+	fmt.Printf("burst: %d accepted, %d rejected\n", accepted, rejected)
+	if expectAllAccepted {
+		check("trusted burst fully accepted", rejected == 0,
+			fmt.Sprintf("%d of 80 rejected despite trusted IP", rejected))
+	} else {
+		check("untrusted burst rate-limited", rejected > 0, "80 rapid events all accepted — limiter inactive")
+	}
 }

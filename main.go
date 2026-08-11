@@ -37,6 +37,9 @@ type Config struct {
 	RetentionSecs    int64
 	PurgeIntervalSec int64
 	ExemptKinds      []uint16
+	RateLimitPerSec  int64
+	RateLimitBurst   int64
+	TrustedIPs       []string
 }
 
 var config Config
@@ -94,6 +97,9 @@ func loadConfig() Config {
 		RetentionSecs:    envInt("RETENTION_SECONDS", 3*60*60),
 		PurgeIntervalSec: envInt("PURGE_INTERVAL_SECONDS", 10*60),
 		ExemptKinds:      envKinds("RETENTION_EXEMPT_KINDS", "0"),
+		RateLimitPerSec:  envInt("RATE_LIMIT_EVENTS_PER_SEC", 10),
+		RateLimitBurst:   envInt("RATE_LIMIT_BURST", 50),
+		TrustedIPs:       envList("TRUSTED_IPS"),
 	}
 	cfg.RelayDescription = env("RELAY_DESCRIPTION", fmt.Sprintf(
 		"Accepts kinds %s only. All events except kinds %s are deleted after %s.",
@@ -107,6 +113,37 @@ func loadConfig() Config {
 		log.Fatal("PURGE_INTERVAL_SECONDS must be positive")
 	}
 	return cfg
+}
+
+func envList(key string) []string {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return nil
+	}
+	items := make([]string, 0)
+	for _, p := range strings.Split(raw, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			items = append(items, p)
+		}
+	}
+	return items
+}
+
+// rateLimitUntrusted applies the per-IP event rate limit, exempting trusted
+// IPs — our own bridge funnels 50+ streams' chat through one egress and must
+// not be throttled like a single anonymous client.
+func rateLimitUntrusted(cfg Config) func(ctx context.Context, event *nostr.Event) (bool, string) {
+	limiter := policies.EventIPRateLimiter(int(cfg.RateLimitPerSec), time.Second, int(cfg.RateLimitBurst))
+	trusted := make(map[string]bool, len(cfg.TrustedIPs))
+	for _, ip := range cfg.TrustedIPs {
+		trusted[ip] = true
+	}
+	return func(ctx context.Context, event *nostr.Event) (bool, string) {
+		if trusted[khatru.GetIP(ctx)] {
+			return false, ""
+		}
+		return limiter(ctx, event)
+	}
 }
 
 func joinKinds(kinds []uint16) string {
@@ -199,7 +236,7 @@ func main() {
 		policies.PreventLargeTags(200),
 		policies.PreventTimestampsInThePast(2*time.Hour),
 		policies.PreventTimestampsInTheFuture(30*time.Minute),
-		policies.EventIPRateLimiter(10, time.Second, 50),
+		rateLimitUntrusted(config),
 	)
 
 	purgeOldEvents(relay, config) // clear backlog before serving
