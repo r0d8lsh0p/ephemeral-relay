@@ -31,6 +31,7 @@ type Config struct {
 	RelayPubkey      string
 	RelayDescription string
 	RelayIcon        string
+	RelayContact     string
 	Port             string
 	DBPath           string
 	AllowedKinds     []uint16
@@ -91,6 +92,7 @@ func loadConfig() Config {
 		RelayName:        env("RELAY_NAME", "ephemeral relay"),
 		RelayPubkey:      env("RELAY_PUBKEY", ""),
 		RelayIcon:        env("RELAY_ICON", ""),
+		RelayContact:     env("RELAY_CONTACT", ""),
 		Port:             env("PORT", "3335"),
 		DBPath:           env("DB_PATH", "db/"),
 		AllowedKinds:     envKinds("ALLOWED_KINDS", "0,5,7,16,1311,1312,1313,9735"),
@@ -324,8 +326,9 @@ func main() {
 	relay.Info.PubKey = config.RelayPubkey
 	relay.Info.Description = config.RelayDescription
 	relay.Info.Icon = config.RelayIcon
+	relay.Info.Contact = config.RelayContact
 	relay.Info.Software = "https://github.com/r0d8lsh0p/ephemeral-relay"
-	relay.Info.Version = "0.2.0"
+	relay.Info.Version = "0.1.0"
 	relay.Info.AddSupportedNIP(40)
 
 	db := badger.BadgerBackend{Path: config.DBPath}

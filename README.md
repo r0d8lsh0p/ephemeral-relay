@@ -105,7 +105,7 @@ cp .env.example .env
 | `TRUSTED_IPS` | — | IPs exempt from the rate limit |
 | `PORT` | `3335` | Listen port |
 | `DB_PATH` | `db/` | Badger database path |
-| `RELAY_NAME` / `RELAY_PUBKEY` / `RELAY_ICON` / `RELAY_DESCRIPTION` | — | NIP-11 identity (description auto-generated from retention settings unless set) |
+| `RELAY_NAME` / `RELAY_PUBKEY` / `RELAY_ICON` / `RELAY_CONTACT` / `RELAY_DESCRIPTION` | — | NIP-11 identity (description auto-generated from retention settings unless set) |
 
 > [!NOTE]
 > The expected use of `TRUSTED_IPS` is colocating this relay with a **bridge**: a bridge funnels many streams' chat through a single egress IP and would otherwise be throttled like one anonymous client. On a platform like Railway, run relay and bridge in the same project and whitelist the bridge's private-network address.
