@@ -1,6 +1,6 @@
 # Ephemeral Relay
 
-**Nothing is forever.**
+**Events are not forever.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.23+-00ADD8.svg?logo=go)](https://golang.org/dl/)

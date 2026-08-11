@@ -106,7 +106,7 @@ func loadConfig() Config {
 	cfg.RelayDescription = env("RELAY_DESCRIPTION", fmt.Sprintf(
 		"Accepts kinds %s only. All events except kinds %s are deleted after %s.",
 		joinKinds(cfg.AllowedKinds), joinKinds(cfg.ExemptKinds),
-		(time.Duration(cfg.RetentionSecs) * time.Second).String(),
+		(time.Duration(cfg.RetentionSecs)*time.Second).String(),
 	))
 	if cfg.RetentionSecs <= 0 {
 		log.Fatal("RETENTION_SECONDS must be positive")

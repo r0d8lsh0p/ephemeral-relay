@@ -1,9 +1,12 @@
 // End-to-end test against a running ephemeral-relay.
 //
 // Run the relay with short retention first, e.g.:
-//   RETENTION_SECONDS=8 PURGE_INTERVAL_SECONDS=2 ./ephemeral-relay
+//
+//	RETENTION_SECONDS=8 PURGE_INTERVAL_SECONDS=2 ./ephemeral-relay
+//
 // then:
-//   go run ./e2e -relay ws://localhost:3335
+//
+//	go run ./e2e -relay ws://localhost:3335
 //
 // Verifies:
 //  1. kind 1 is rejected (not in the allowlist)
