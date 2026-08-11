@@ -33,7 +33,7 @@ The posture of this relay is **ephemeral, anti-gossip**. For content that must n
 
 1. **Blanket TTL** — the relay hard-deletes every retained-kind event after `RETENTION_SECONDS`.
 2. **NIP-40 expiration** — the relay respects NIP-40 expiration times, and recommends it, so that even if a copy escapes to other relays, honest ones delete it on schedule.
-3. **NIP-70 protected events** — the relay respects NIP-70 protected events, and recommends them, so that an honest relay will not accept the event from anyone but its author — a rebroadcast copy is never stored at all.
+3. **NIP-70 protected events** — the relay respects NIP-70 protected events, validates them with NIP-42 and recommends their use so that an honest relay will not accept the event from anyone but its author and a rebroadcast copy is never stored at all.
 
 The ephemeral anti-gossip posture is that this relay will delete events after RETENTION_SECONDS, and that all other honest relays should not store the events at all (NIP-70), and should delete them at expiry if stored (NIP-40).
 
