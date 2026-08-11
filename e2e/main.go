@@ -81,6 +81,7 @@ func main() {
 	burstTrusted := flag.Bool("burst-trusted", false, "expect the burst to fully succeed (our IP is in TRUSTED_IPS)")
 	nip40 := flag.Bool("nip40", false, "only run the NIP-40 expiration check")
 	ttl := flag.Int("ttl", 180, "NIP-40 TTL in seconds for the expiring event")
+	nip70 := flag.Bool("nip70", false, "only run the NIP-70 protected-event check")
 	flag.Parse()
 
 	if *burstOnly {
@@ -92,6 +93,13 @@ func main() {
 	}
 	if *nip40 {
 		runNip40Check(*url, *ttl)
+		if failures > 0 {
+			os.Exit(1)
+		}
+		return
+	}
+	if *nip70 {
+		runNip70Check(*url)
 		if failures > 0 {
 			os.Exit(1)
 		}
@@ -200,6 +208,67 @@ func runNip40Check(url string, ttlSecs int) {
 	}
 	check("expiring event deleted after TTL", gone, "event still served 2m past expiry")
 	check("control survives", ids[controlID], "control was deleted — NIP-40 sweep overreached")
+}
+
+// runNip70Check verifies protected-event (NIP-70 "-" tag) handling, enforced
+// by khatru core: unauthenticated publishes get an AUTH challenge, the author
+// can publish after authenticating, and a *different* authenticated client
+// rebroadcasting the same signed event is refused — the anti-gossip property.
+func runNip70Check(url string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	authorSK := nostr.GeneratePrivateKey()
+	authorPK, _ := nostr.GetPublicKey(authorSK)
+	strangerSK := nostr.GeneratePrivateKey()
+
+	evt := nostr.Event{
+		PubKey:    authorPK,
+		CreatedAt: nostr.Now(),
+		Kind:      1311,
+		Tags:      nostr.Tags{{"a", "30311:deadbeef:nip70-stream"}, {"-"}},
+		Content:   "protected chat message",
+	}
+	if err := evt.Sign(authorSK); err != nil {
+		log.Fatalf("sign failed: %v", err)
+	}
+
+	// 1. unauthenticated publish → auth-required
+	relay1, err := nostr.RelayConnect(ctx, url)
+	if err != nil {
+		log.Fatalf("connect failed: %v", err)
+	}
+	err = relay1.Publish(ctx, evt)
+	check("protected event challenged when unauthenticated",
+		err != nil && strings.Contains(err.Error(), "auth-required"),
+		fmt.Sprintf("expected auth-required, got %v", err))
+
+	// 2. authenticate as the author → accepted
+	err = relay1.Auth(ctx, func(authEvent *nostr.Event) error { return authEvent.Sign(authorSK) })
+	check("author NIP-42 auth accepted", err == nil, fmt.Sprintf("auth failed: %v", err))
+	err = relay1.Publish(ctx, evt)
+	check("author can publish protected event", err == nil, fmt.Sprintf("publish failed: %v", err))
+	relay1.Close()
+
+	// 3. a different authenticated client rebroadcasts the same signed event → blocked
+	relay2, err := nostr.RelayConnect(ctx, url)
+	if err != nil {
+		log.Fatalf("connect failed: %v", err)
+	}
+	defer relay2.Close()
+	err = relay2.Publish(ctx, evt) // provoke the AUTH challenge
+	_ = relay2.Auth(ctx, func(authEvent *nostr.Event) error { return authEvent.Sign(strangerSK) })
+	err = relay2.Publish(ctx, evt)
+	check("rebroadcast by non-author refused",
+		err != nil && strings.Contains(err.Error(), "author"),
+		fmt.Sprintf("expected author-mismatch rejection, got %v", err))
+
+	// 4. the accepted event is served normally
+	ids, err := queryIDs(ctx, url, nostr.Filter{Authors: []string{authorPK}})
+	if err != nil {
+		log.Fatalf("query failed: %v", err)
+	}
+	check("protected event served", ids[evt.ID], "protected event missing from query")
 }
 
 // runBurstCheck publishes 80 chat events as fast as possible over one

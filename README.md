@@ -1,28 +1,77 @@
 # Ephemeral Relay
 
-Ephemeral Relay is a nostr relay that accepts only a configured set of event kinds and deletes everything past a fixed age. Nothing here is forever: the relay's NIP-11 description states its retention policy up front, and a periodic sweep hard-deletes anything older than the window. Events can also opt into dying sooner via [NIP-40](https://github.com/nostr-protocol/nips/blob/master/40.md) expiration tags, which are fully honoured.
+**Nothing here is forever.**
 
-It's built on the [Khatru](https://khatru.nostr.technology) framework.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/go-1.23+-00ADD8.svg?logo=go)](https://golang.org/dl/)
+[![Built on khatru](https://img.shields.io/badge/built%20on-khatru-purple.svg)](https://khatru.nostr.technology)
+[![NIPs](https://img.shields.io/badge/NIPs-11%20·%2040%20·%2042%20·%2070-lightgrey.svg)](https://github.com/nostr-protocol/nips)
+
+Ephemeral Relay is a nostr relay that accepts only the event kinds you configure and deletes everything past a fixed age. Built for content whose natural lifetime is hours, not years — live-stream chat, bridged messages, presence — on the [Khatru](https://khatru.nostr.technology) framework.
+
+The relay tells clients its policy itself. Its NIP-11 description is generated from your retention settings, so you don't have to trust a README:
+
+> Accepts kinds 0,5,7,16,1311,1312,1313,9735 only. All events except kinds 0 are deleted after 3h0m0s.
+
+## The life of an event
+
+```mermaid
+flowchart LR
+    A([EVENT arrives]) -->|kind not in ALLOWED_KINDS| X([rejected])
+    A -->|NIP-40 tag already expired| X
+    A -->|NIP-70 “-” tag, sender not authed as author| X
+    A --> S[(stored & served)]
+    S -->|NIP-40 expiration passes| H[hidden from queries<br/>at the exact second] --> D([hard-deleted by sweep])
+    S -->|older than RETENTION_SECONDS| D
+    S -.->|kind in RETENTION_EXEMPT_KINDS| K([kept indefinitely])
+```
+
+## Protected three ways
+
+The posture is **ephemeral, restricted, anti-gossip**. For content that must not outlive its moment — say, chat bridged from users on another platform who never signed up for permanent, globally-replicated speech — three mechanisms stack:
+
+1. **Blanket TTL** — the relay hard-deletes every retained-kind event after `RETENTION_SECONDS`, tag or no tag. This is the guarantee that depends on nothing the author did.
+2. **NIP-40 expiration** — an `["expiration", "<unix>"]` tag travels *inside the signed event*, so even if a copy escapes to other relays, honest ones delete it on schedule. Here it's fully honoured: already-expired events are rejected, expired events vanish from queries at the exact second, and the sweep hard-deletes them.
+3. **NIP-70 protected events** — a `["-"]` tag means only the event's author, authenticated via NIP-42, can publish it *anywhere*. Honest relays refuse rebroadcasts outright, because a third party can never authenticate as the author. Enforced here by khatru core.
+
+Publish with all three and redistribution requires a *dishonest* relay — and even then the expiration keeps working on every honest hop downstream.
+
+## Why this relay
+
+No off-the-shelf relay combined these (as of mid-2026):
+
+| | kind allowlist | age-based retention | NIP-40 honoured | NIP-70 enforced |
+|---|:---:|:---:|:---:|:---:|
+| [nostr-rs-relay](https://github.com/scsibug/nostr-rs-relay) | ✅ | ❌ | ✅ | ❌ |
+| [strfry](https://github.com/hoytech/strfry) | plugin | ephemeral kinds only | ✅ | ✅ |
+| [SW2](https://github.com/bitvora/sw2) / [WoT Relay](https://github.com/bitvora/wot-relay) (khatru) | ❌ | WoT: days-grain | ❌ | ✅ |
+| **Ephemeral Relay** | ✅ | ✅ | ✅ | ✅ |
+
+## Prove it in 60 seconds
+
+With docker and [nak](https://github.com/fiatjaf/nak):
+
+```bash
+docker compose up -d --build   # relay on ws://localhost:7448
+
+# publish a chat message that expires in 30 seconds
+nak event -k 1311 -c "I am mortal" -t expiration=$(($(date +%s)+30)) ws://localhost:7448
+
+nak req -k 1311 ws://localhost:7448   # there it is
+sleep 30
+nak req -k 1311 ws://localhost:7448   # gone
+
+nak event -k 1 -c "a permanent note" ws://localhost:7448
+# "blocked: received event kind 1 not allowed"
+```
 
 ## Use Cases
 
-This relay suits anything whose natural lifetime is hours, not years:
-
 - **Live stream chat**: chat messages, reactions, reposts and zap receipts live for the duration of a show and then scroll away, like chat is supposed to.
-- **Bridged content**: when you republish messages on behalf of users from another platform who never signed up for permanent, globally-replicated speech, a relay that forgets is a feature.
-- **Ephemeral notice boards**: announcements, presence, status — anything where stale content is worse than no content.
+- **Bridged content**: colocate with a bridge that republishes users from another platform; stamp its events with `expiration` and `-` and the transience promise holds even beyond this relay.
+- **Ephemeral notice boards**: announcements, presence, status — anywhere stale content is worse than no content.
 
-## How It Works
-
-- **Kind allowlist**: only the kinds in `ALLOWED_KINDS` are accepted; everything else is rejected at publish. The default set (`0,5,7,16,1311,1312,1313,9735`) is live-chat flavoured: profiles, deletion requests, reactions, generic reposts, live chat messages, and zap receipts — and deliberately **not** kind 1 notes.
-- **Age-based retention**: a periodic sweep hard-deletes events older than `RETENTION_SECONDS`. Kinds listed in `RETENTION_EXEMPT_KINDS` (profiles, by default) are kept indefinitely, so identities outlive the chat.
-- **NIP-40 expiration**, three layers:
-  - events that arrive already expired are rejected;
-  - expired events are never served, from the exact second they lapse, independent of sweep timing;
-  - the sweep hard-deletes expired events from the store, whatever their kind or age.
-
-  The expiration tag can only shorten a life — a distant expiration does not exempt an event from the blanket retention window.
-- **Rate limiting**: per-IP token bucket on writes, with a `TRUSTED_IPS` exemption for your own infrastructure (for example a bridge that funnels many streams' chat through a single egress IP).
+The default kind set is live-chat flavoured, but like WoT Relay's archived kinds, **it's entirely yours to configure** — set `ALLOWED_KINDS` to whatever your use case needs. The only opinion this relay keeps is that things expire.
 
 ## Prerequisites
 
@@ -30,8 +79,6 @@ This relay suits anything whose natural lifetime is hours, not years:
 - **Build Essentials**: If you're using Linux, you may need to install build essentials. You can do this by running `sudo apt install build-essential`.
 
 ## Setup Instructions
-
-Follow these steps to get Ephemeral Relay running on your local machine:
 
 ### 1. Clone the repository
 
@@ -42,48 +89,37 @@ cd ephemeral-relay
 
 ### 2. Copy `.env.example` to `.env`
 
-You'll need to create an `.env` file based on the example provided in the repository.
-
 ```bash
 cp .env.example .env
 ```
 
 ### 3. Set your environment variables
 
-Open the `.env` file and set the necessary environment variables:
+| Variable | Default | Meaning |
+|---|---|---|
+| `ALLOWED_KINDS` | `0,5,7,16,1311,1312,1313,9735` | Only these kinds are accepted — configure for your use case |
+| `RETENTION_SECONDS` | `10800` (3 h) | Events older than this are hard-deleted |
+| `PURGE_INTERVAL_SECONDS` | `600` | How often the deletion sweep runs |
+| `RETENTION_EXEMPT_KINDS` | `0` | Kinds kept indefinitely (profiles by default) |
+| `RATE_LIMIT_EVENTS_PER_SEC` / `RATE_LIMIT_BURST` | `10` / `50` | Per-IP write rate limit |
+| `TRUSTED_IPS` | — | IPs exempt from the rate limit |
+| `PORT` | `3335` | Listen port |
+| `DB_PATH` | `db/` | Badger database path |
+| `RELAY_NAME` / `RELAY_PUBKEY` / `RELAY_ICON` / `RELAY_DESCRIPTION` | — | NIP-11 identity (description auto-generated from retention settings unless set) |
 
-```bash
-RELAY_NAME="chat.yourdomain.com"
-RELAY_PUBKEY="YourPublicKey" # the owner's hexkey, not npub
-RELAY_ICON="https://yourdomain.com/icon.png"
-# RELAY_DESCRIPTION is auto-generated from the retention settings unless you set it.
+> [!NOTE]
+> The expected use of `TRUSTED_IPS` is colocating this relay with a **bridge**: a bridge funnels many streams' chat through a single egress IP and would otherwise be throttled like one anonymous client. On a platform like Railway, run relay and bridge in the same project and whitelist the bridge's private-network address.
 
-PORT=3335
-DB_PATH="db/" # any path you would like the database to be saved
-
-# Only these kinds are accepted; everything else is rejected at publish.
-ALLOWED_KINDS="0,5,7,16,1311,1312,1313,9735"
-
-RETENTION_SECONDS=10800 # events older than this are hard-deleted (3 hours)
-PURGE_INTERVAL_SECONDS=600 # how often the deletion sweep runs
-RETENTION_EXEMPT_KINDS="0" # kinds kept indefinitely (profiles by default)
-
-RATE_LIMIT_EVENTS_PER_SEC=10 # per-IP write rate limit
-RATE_LIMIT_BURST=50
-TRUSTED_IPS="" # comma-separated IPs exempt from the rate limit, e.g. your bridge
-```
+> [!IMPORTANT]
+> NIP-40 can only *shorten* an event's life. A distant expiration does not exempt an event from `RETENTION_SECONDS` — the blanket window always wins.
 
 ### 4. Build the project
-
-Run the following command to build the relay:
 
 ```bash
 go build
 ```
 
 ### 5. Create a Systemd Service (optional)
-
-To have the relay run as a service, create a systemd unit file.
 
 1. Create the file:
 
@@ -109,35 +145,18 @@ WantedBy=multi-user.target
 
 Replace `/home/ubuntu/` with the actual path where you cloned the repository.
 
-3. Reload systemd to recognize the new service:
+3. Reload systemd, start, and (optionally) enable on boot:
 
 ```bash
 sudo systemctl daemon-reload
-```
-
-4. Start the service:
-
-```bash
 sudo systemctl start ephemeral-relay
-```
-
-5. (Optional) Enable the service to start on boot:
-
-```bash
 sudo systemctl enable ephemeral-relay
 ```
 
-#### Permission Issues on Some Systems
-
-The relay may not have permissions to read and write to the database. To fix this, you can change the permissions of the database folder:
-
-```bash
-sudo chmod -R 777 /path/to/db
-```
+> [!TIP]
+> If the relay can't read or write its database, give the service user ownership of the db folder — `sudo chown -R <service-user> /path/to/db` — rather than opening permissions wide.
 
 ### 6. Serving over nginx (optional)
-
-You can serve the relay over nginx by adding the following configuration to your nginx configuration file:
 
 ```nginx
 server {
@@ -157,30 +176,24 @@ server {
 }
 ```
 
-Replace `chat.yourdomain.com` with your actual domain name. Note that `X-Forwarded-For` matters here: the rate limiter identifies clients by real IP through the proxy, and `TRUSTED_IPS` entries are matched against those.
-
-After adding the configuration, restart nginx:
+Replace `chat.yourdomain.com` with your actual domain name, then restart nginx:
 
 ```bash
 sudo systemctl restart nginx
 ```
 
+> [!WARNING]
+> `X-Forwarded-For` is load-bearing: the rate limiter identifies clients by real IP through the proxy, and `TRUSTED_IPS` entries are matched against those. Strip or mangle it and every client looks like your proxy.
+
 ### 7. Install Certbot (optional)
 
-If you want to serve the relay over HTTPS, you can use Certbot to generate an SSL certificate.
+If you want to serve the relay over HTTPS, use Certbot to generate an SSL certificate:
 
 ```bash
 sudo apt-get update
 sudo apt-get install certbot python3-certbot-nginx
-```
-
-After installing Certbot, run the following command to generate an SSL certificate:
-
-```bash
 sudo certbot --nginx
 ```
-
-Follow the instructions to generate the certificate.
 
 ### 8. Access the relay
 
@@ -192,12 +205,9 @@ curl -H 'Accept: application/nostr+json' https://chat.yourdomain.com
 
 ## Start the Project with Docker Compose
 
-To start the project using Docker Compose, follow these steps:
-
 1. Ensure Docker and Docker Compose are installed on your system.
-2. Navigate to the project directory.
-3. Adjust the environment variables in `docker-compose.yml` as needed.
-4. Run the following command:
+2. Adjust the environment variables in `docker-compose.yml` as needed.
+3. Run:
 
    ```sh
    # in foreground
@@ -206,7 +216,7 @@ To start the project using Docker Compose, follow these steps:
    docker compose up --build -d
    ```
 
-5. For updating the relay, run the following command:
+4. To update the relay:
 
    ```sh
    git pull
@@ -214,7 +224,7 @@ To start the project using Docker Compose, follow these steps:
    docker compose up -d
    ```
 
-This will build the Docker image and start the `relay` service as defined in the `docker-compose.yml` file. The application will be accessible on port 7448 (mapped from the container's 3335).
+The `relay` service will be accessible on port 7448 (mapped from the container's 3335).
 
 ## End-to-End Tests
 
@@ -230,7 +240,8 @@ Checks: disallowed kinds rejected; chat accepted and served; after the retention
 Additional modes:
 
 ```bash
-go run ./e2e -relay ws://localhost:3336 -nip40 -ttl 180 # NIP-40: short-TTL event dies on time, tagless control survives
+go run ./e2e -relay ws://localhost:3336 -nip40 -ttl 180 # short-TTL event dies on time, tagless control survives
+go run ./e2e -relay ws://localhost:3336 -nip70 # "-" events: author-only publish, rebroadcasts refused
 go run ./e2e -relay ws://localhost:3336 -burst-only # rate limiter caps an untrusted burst
 go run ./e2e -relay ws://localhost:3336 -burst-only -burst-trusted # TRUSTED_IPS bypass takes the full volley
 ```
