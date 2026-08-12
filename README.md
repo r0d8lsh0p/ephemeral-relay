@@ -2,6 +2,7 @@
 
 **Events are not forever.**
 
+[![CI](https://github.com/r0d8lsh0p/ephemeral-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/r0d8lsh0p/ephemeral-relay/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25+-00ADD8.svg?logo=go)](https://golang.org/dl/)
 [![Built on khatru](https://img.shields.io/badge/built%20on-khatru-purple.svg)](https://khatru.nostr.technology)
@@ -230,6 +231,13 @@ curl -H 'Accept: application/nostr+json' https://chat.yourdomain.com
    ```
 
 The `relay` service will be accessible on port 7448 (mapped from the container's 3335).
+
+## Tests
+
+Unit and in-process integration tests (`go test ./...`) cover the policies,
+purge logic, rate limiter (with an injected clock), and a full websocket
+relay round-trip on the in-memory slicestore — they run in well under a
+second. CI runs them plus the protocol-level e2e below on every push.
 
 ## End-to-End Tests
 

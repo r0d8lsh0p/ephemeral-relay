@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/eventstore"
 	"fiatjaf.com/nostr/eventstore/lmdb"
 	"fiatjaf.com/nostr/khatru"
 	"fiatjaf.com/nostr/khatru/policies"
@@ -162,44 +163,67 @@ func rateLimitUntrusted(cfg Config) func(ctx context.Context, event nostr.Event)
 	for _, ip := range cfg.TrustedIPs {
 		trusted[ip] = true
 	}
-
-	type bucket struct {
-		tokens float64
-		last   time.Time
-	}
-	var mu sync.Mutex
-	buckets := make(map[string]*bucket)
-	rate := float64(cfg.RateLimitPerSec)
-	burst := float64(cfg.RateLimitBurst)
+	limiter := newIPLimiter(float64(cfg.RateLimitPerSec), float64(cfg.RateLimitBurst), trusted, time.Now)
 
 	return func(ctx context.Context, event nostr.Event) (bool, string) {
-		ip := khatru.GetIP(ctx)
-		if trusted[ip] {
+		if limiter.allow(khatru.GetIP(ctx)) {
 			return false, ""
 		}
-		mu.Lock()
-		defer mu.Unlock()
-		now := time.Now()
-		if len(buckets) > 10000 { // bound memory under address-diverse floods
-			for k, b := range buckets {
-				if now.Sub(b.last) > 10*time.Minute {
-					delete(buckets, k)
-				}
+		return true, "rate-limited: too many events"
+	}
+}
+
+type ipBucket struct {
+	tokens float64
+	last   time.Time
+}
+
+// ipLimiter is a per-IP token bucket. The clock is injected for testability.
+type ipLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]*ipBucket
+	rate    float64
+	burst   float64
+	trusted map[string]bool
+	now     func() time.Time
+}
+
+func newIPLimiter(rate, burst float64, trusted map[string]bool, now func() time.Time) *ipLimiter {
+	return &ipLimiter{
+		buckets: make(map[string]*ipBucket),
+		rate:    rate,
+		burst:   burst,
+		trusted: trusted,
+		now:     now,
+	}
+}
+
+func (l *ipLimiter) allow(ip string) bool {
+	if l.trusted[ip] {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	if len(l.buckets) > 10000 { // bound memory under address-diverse floods
+		for k, b := range l.buckets {
+			if now.Sub(b.last) > 10*time.Minute {
+				delete(l.buckets, k)
 			}
 		}
-		b := buckets[ip]
-		if b == nil {
-			b = &bucket{tokens: burst, last: now}
-			buckets[ip] = b
-		}
-		b.tokens = min(burst, b.tokens+now.Sub(b.last).Seconds()*rate)
-		b.last = now
-		if b.tokens < 1 {
-			return true, "rate-limited: too many events"
-		}
-		b.tokens--
-		return false, ""
 	}
+	b := l.buckets[ip]
+	if b == nil {
+		b = &ipBucket{tokens: l.burst, last: now}
+		l.buckets[ip] = b
+	}
+	b.tokens = min(l.burst, b.tokens+now.Sub(b.last).Seconds()*l.rate)
+	b.last = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
 }
 
 // preventLargeTags restores the old khatru PreventLargeTags guard, which
@@ -268,7 +292,7 @@ func retainedKinds(cfg Config) []nostr.Kind {
 // purgeOldEvents hard-deletes retained-kind events past the age cutoff.
 // Queries the store directly (not the relay hooks) so that the expired-event
 // query filter cannot hide anything from the sweep.
-func purgeOldEvents(db *lmdb.LMDBBackend, cfg Config) {
+func purgeOldEvents(db eventstore.Store, cfg Config) {
 	cutoff := nostr.Timestamp(time.Now().Unix() - cfg.RetentionSecs)
 	kinds := retainedKinds(cfg)
 
@@ -297,7 +321,7 @@ func purgeOldEvents(db *lmdb.LMDBBackend, cfg Config) {
 // purgeExpiredEvents hard-deletes events whose NIP-40 expiration has passed,
 // whatever their kind or age. Walks the store in created_at-descending batches;
 // the whole store is at most a retention window of chat, so this stays cheap.
-func purgeExpiredEvents(db *lmdb.LMDBBackend, cfg Config) {
+func purgeExpiredEvents(db eventstore.Store, cfg Config) {
 	now := nostr.Now()
 	until := now
 
@@ -332,7 +356,7 @@ func purgeExpiredEvents(db *lmdb.LMDBBackend, cfg Config) {
 	}
 }
 
-func runPurgeLoop(db *lmdb.LMDBBackend, cfg Config) {
+func runPurgeLoop(db eventstore.Store, cfg Config) {
 	ticker := time.NewTicker(time.Duration(cfg.PurgeIntervalSec) * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
