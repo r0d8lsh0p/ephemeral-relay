@@ -422,7 +422,7 @@ func main() {
 	relay.Info.Icon = config.RelayIcon
 	relay.Info.Contact = config.RelayContact
 	relay.Info.Software = "https://github.com/r0d8lsh0p/ephemeral-relay"
-	relay.Info.Version = "0.1.0"
+	relay.Info.Version = "0.2.0"
 	relay.Info.AddSupportedNIP("40")
 	if config.RelayPubkey != "" {
 		pk, err := nostr.PubKeyFromHex(config.RelayPubkey)
