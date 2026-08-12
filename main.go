@@ -53,6 +53,10 @@ type Config struct {
 	RateLimitPerSec  int64
 	RateLimitBurst   int64
 	TrustedIPs       []string
+	DemandEndpoint   bool
+	DemandKinds      []nostr.Kind // empty = any kind registers demand
+	DemandStaleSecs  int64
+	AuthToken        string // shared bearer token for HTTP endpoints (currently /demand)
 }
 
 var config Config
@@ -111,6 +115,30 @@ func envList(key string) []string {
 	return items
 }
 
+func envBool(key string, fallback bool) bool {
+	v := strings.ToLower(os.Getenv(key))
+	switch v {
+	case "":
+		return fallback
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	log.Fatalf("invalid %s: %q (want true/false)", key, v)
+	return false
+}
+
+// envKindsOptional is envKinds without the at-least-one requirement: an empty
+// value is a valid configuration (meaning "no kind restriction").
+func envKindsOptional(key string) []nostr.Kind {
+	raw := os.Getenv(key)
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	return envKinds(key, "")
+}
+
 func loadConfig() Config {
 	_ = godotenv.Load(".env")
 
@@ -128,6 +156,10 @@ func loadConfig() Config {
 		RateLimitPerSec:  envInt("RATE_LIMIT_EVENTS_PER_SEC", 10),
 		RateLimitBurst:   envInt("RATE_LIMIT_BURST", 50),
 		TrustedIPs:       envList("TRUSTED_IPS"),
+		DemandEndpoint:   envBool("DEMAND_ENDPOINT", false),
+		DemandKinds:      envKindsOptional("DEMAND_KINDS"),
+		DemandStaleSecs:  envInt("DEMAND_STALE_SECONDS", 600),
+		AuthToken:        env("AUTH_TOKEN", ""),
 	}
 	cfg.RelayDescription = env("RELAY_DESCRIPTION", fmt.Sprintf(
 		"Accepts kinds %s only. All events except kinds %s are deleted after %s.",
@@ -139,6 +171,9 @@ func loadConfig() Config {
 	}
 	if cfg.PurgeIntervalSec <= 0 {
 		log.Fatal("PURGE_INTERVAL_SECONDS must be positive")
+	}
+	if cfg.DemandStaleSecs < 0 {
+		log.Fatal("DEMAND_STALE_SECONDS must not be negative")
 	}
 	return cfg
 }
@@ -422,9 +457,32 @@ func main() {
 	purgeExpiredEvents(db, config)
 	go runPurgeLoop(db, config)
 
+	mux := http.NewServeMux()
+	if config.DemandEndpoint {
+		tracker := newDemandTracker(config.DemandKinds,
+			time.Duration(config.DemandStaleSecs)*time.Second, time.Now)
+		relay.OnListenerAdded = func(ws *khatru.WebSocket, ssid int, id string, filter nostr.Filter) {
+			tracker.listenerAdded(filter)
+		}
+		relay.OnListenerRemoved = func(ws *khatru.WebSocket, ssid int, id string, filter nostr.Filter) {
+			tracker.listenerRemoved(filter)
+		}
+		mux.HandleFunc("GET /demand", withAuthToken(config.AuthToken, tracker.handler()))
+		log.Printf("demand endpoint enabled (kinds %s, auth %v)",
+			demandKindsLabel(config.DemandKinds), config.AuthToken != "")
+	}
+	mux.Handle("/", relay)
+
 	log.Printf("ephemeral-relay on :%s — kinds %s, retention %ds (exempt %s)",
 		config.Port, joinKinds(config.AllowedKinds), config.RetentionSecs, joinKinds(config.ExemptKinds))
-	if err := http.ListenAndServe(":"+config.Port, relay); err != nil {
+	if err := http.ListenAndServe(":"+config.Port, mux); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func demandKindsLabel(kinds []nostr.Kind) string {
+	if len(kinds) == 0 {
+		return "any"
+	}
+	return joinKinds(kinds)
 }

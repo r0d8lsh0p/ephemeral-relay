@@ -50,6 +50,21 @@ jobs:
           go run ./e2e -relay ws://localhost:3338 -nip40 -ttl 20
           kill $RELAY
 
+      - name: e2e - demand endpoint (open, token, disabled)
+        run: |
+          PORT=3341 DB_PATH=/tmp/e2e-dmd1 RETENTION_SECONDS=300 DEMAND_ENDPOINT=true DEMAND_KINDS=1311 ./ephemeral-relay & RELAY1=$!
+          sleep 1
+          go run ./e2e -relay ws://localhost:3341 -demand
+          kill $RELAY1
+          PORT=3342 DB_PATH=/tmp/e2e-dmd2 RETENTION_SECONDS=300 DEMAND_ENDPOINT=true AUTH_TOKEN=ci-secret ./ephemeral-relay & RELAY2=$!
+          sleep 1
+          go run ./e2e -relay ws://localhost:3342 -demand -auth-token ci-secret
+          kill $RELAY2
+          PORT=3343 DB_PATH=/tmp/e2e-dmd3 RETENTION_SECONDS=300 ./ephemeral-relay & RELAY3=$!
+          sleep 1
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3343/demand)" = "404"
+          kill $RELAY3
+
       - name: e2e - rate limit (untrusted capped, trusted bypass)
         run: |
           PORT=3339 DB_PATH=/tmp/e2e-burst1 RETENTION_SECONDS=300 ./ephemeral-relay & RELAY1=$!

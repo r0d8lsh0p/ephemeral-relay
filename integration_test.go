@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"iter"
+	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -234,4 +237,123 @@ func TestRelayOverWebsocket(t *testing.T) {
 			t.Errorf("expected only latest kind 0, got %d event(s)", len(served))
 		}
 	})
+}
+
+// TestDemandOverWebsocket exercises the demand tracker through real
+// subscriptions: mirror main()'s wiring (listener hooks + mux route), then
+// verify entries appear per distinct filter, aggregate across clients, and
+// decrement on unsubscribe. Consumer-side selection (finding entries whose
+// filter names a given #a) is done exactly as a bridge would.
+func TestDemandOverWebsocket(t *testing.T) {
+	store := &slicestore.SliceStore{}
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	relay := khatru.NewRelay()
+	relay.UseEventstore(store, maxQueryLimit)
+
+	tracker := newDemandTracker(nil, time.Minute, time.Now)
+	relay.OnListenerAdded = func(ws *khatru.WebSocket, ssid int, id string, filter nostr.Filter) {
+		tracker.listenerAdded(filter)
+	}
+	relay.OnListenerRemoved = func(ws *khatru.WebSocket, ssid int, id string, filter nostr.Filter) {
+		tracker.listenerRemoved(filter)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /demand", tracker.handler())
+	mux.Handle("/", relay)
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	fetchDemand := func() []demandItem {
+		t.Helper()
+		resp, err := http.Get(srv.URL + "/demand")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var body struct {
+			Demand []demandItem `json:"demand"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body.Demand
+	}
+
+	const room = "30311:deadbeef:demand-stream"
+
+	// consumer-side selection, as a bridge would do it
+	activeForRoom := func() int {
+		for _, it := range fetchDemand() {
+			if slices.Contains(it.Filter.Tags["a"], room) {
+				return it.Active
+			}
+		}
+		return -1
+	}
+
+	waitFor := func(cond func() bool, what string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if cond() {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s", what)
+	}
+
+	viewer, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer viewer.Close()
+
+	// a firehose subscription is its own entry, with no #a to select on
+	firehose, err := viewer.Subscribe(ctx, nostr.Filter{Kinds: []nostr.Kind{1311}}, nostr.SubscriptionOptions{})
+	if err != nil {
+		t.Fatalf("firehose subscribe: %v", err)
+	}
+	defer firehose.Unsub()
+	waitFor(func() bool { return len(fetchDemand()) == 1 }, "firehose entry to appear")
+	if activeForRoom() != -1 {
+		t.Fatal("firehose entry must not match #a selection")
+	}
+
+	// a scoped subscription is a second, selectable entry
+	sub, err := viewer.Subscribe(ctx, nostr.Filter{
+		Kinds: []nostr.Kind{1311},
+		Tags:  nostr.TagMap{"a": []string{room}},
+	}, nostr.SubscriptionOptions{})
+	if err != nil {
+		t.Fatalf("scoped subscribe: %v", err)
+	}
+	waitFor(func() bool { return activeForRoom() == 1 }, "scoped entry with active=1")
+
+	// an identical filter from a second client aggregates, not duplicates
+	viewer2, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	if err != nil {
+		t.Fatalf("connect 2: %v", err)
+	}
+	defer viewer2.Close()
+	sub2, err := viewer2.Subscribe(ctx, nostr.Filter{
+		Kinds: []nostr.Kind{1311},
+		Tags:  nostr.TagMap{"a": []string{room}},
+	}, nostr.SubscriptionOptions{})
+	if err != nil {
+		t.Fatalf("scoped subscribe 2: %v", err)
+	}
+	waitFor(func() bool { return activeForRoom() == 2 && len(fetchDemand()) == 2 }, "aggregation to active=2 in one entry")
+
+	// unsubscribing decrements; the entry stays visible with active=0
+	sub.Unsub()
+	sub2.Unsub()
+	waitFor(func() bool { return activeForRoom() == 0 }, "unsubscribes to drop active to 0")
 }
