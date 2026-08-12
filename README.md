@@ -251,6 +251,9 @@ go run ./e2e -relay ws://localhost:3336 -burst-only # rate limiter caps an untru
 go run ./e2e -relay ws://localhost:3336 -burst-only -burst-trusted # TRUSTED_IPS bypass takes the full volley
 ```
 
+> [!IMPORTANT]
+> Run the two burst checks against a **locally-run binary**, as shown — the relay must see the client arrive from `127.0.0.1`. Behind docker port-mapping the client appears as the bridge gateway IP instead, which tests a different (weaker) case: the untrusted check can pass even if localhost traffic were accidentally exempt. Run as a pair on the same relay: the untrusted check proves localhost is *not* exempt, which is what makes the trusted check's 80/80 meaningful.
+
 ## License
 
 MIT

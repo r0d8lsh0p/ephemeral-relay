@@ -273,6 +273,12 @@ func runNip70Check(url string) {
 // connection — simulating the bridge's single egress fanning in 50+ streams'
 // chat. Trusted mode expects zero rejections; untrusted expects the limiter
 // to bite (default burst allowance is 50).
+//
+// Run both modes against a locally-run relay binary so the client arrives
+// from 127.0.0.1: that makes the untrusted check prove localhost gets no
+// special exemption (a hardcoded one in an upstream limiter once slipped
+// through when this check only ran behind docker's NAT), and it's what makes
+// the trusted check's full acceptance attributable to TRUSTED_IPS.
 func runBurstCheck(url string, expectAllAccepted bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
