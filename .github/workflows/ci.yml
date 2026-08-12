@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build -o ephemeral-relay .
+
+      - name: unit + integration tests
+        run: go test ./...
+
+      # Protocol-level e2e against the real binary (lmdb storage).
+      # Runs on localhost — deliberately, since the client source IP being
+      # 127.0.0.1 is the strong cell for the rate-limit checks (see README).
+      - name: e2e - retention + kinds
+        run: |
+          PORT=3336 DB_PATH=/tmp/e2e-base RETENTION_SECONDS=8 PURGE_INTERVAL_SECONDS=2 ./ephemeral-relay & RELAY=$!
+          sleep 1
+          go run ./e2e -relay ws://localhost:3336 -retention 8
+          kill $RELAY
+
+      - name: e2e - NIP-70 protected events
+        run: |
+          PORT=3337 DB_PATH=/tmp/e2e-nip70 RETENTION_SECONDS=300 ./ephemeral-relay & RELAY=$!
+          sleep 1
+          go run ./e2e -relay ws://localhost:3337 -nip70
+          kill $RELAY
+
+      - name: e2e - NIP-40 expiration
+        run: |
+          PORT=3338 DB_PATH=/tmp/e2e-nip40 RETENTION_SECONDS=3600 PURGE_INTERVAL_SECONDS=5 ./ephemeral-relay & RELAY=$!
+          sleep 1
+          go run ./e2e -relay ws://localhost:3338 -nip40 -ttl 20
+          kill $RELAY
+
+      - name: e2e - rate limit (untrusted capped, trusted bypass)
+        run: |
+          PORT=3339 DB_PATH=/tmp/e2e-burst1 RETENTION_SECONDS=300 ./ephemeral-relay & RELAY1=$!
+          sleep 1
+          go run ./e2e -relay ws://localhost:3339 -burst-only
+          kill $RELAY1
+          PORT=3340 DB_PATH=/tmp/e2e-burst2 RETENTION_SECONDS=300 TRUSTED_IPS=127.0.0.1,::1 ./ephemeral-relay & RELAY2=$!
+          sleep 1
+          go run ./e2e -relay ws://localhost:3340 -burst-only -burst-trusted
+          kill $RELAY2

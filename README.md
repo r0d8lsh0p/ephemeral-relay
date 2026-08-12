@@ -2,8 +2,9 @@
 
 **Events are not forever.**
 
+[![CI](https://github.com/r0d8lsh0p/ephemeral-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/r0d8lsh0p/ephemeral-relay/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/go-1.23+-00ADD8.svg?logo=go)](https://golang.org/dl/)
+[![Go](https://img.shields.io/badge/go-1.25+-00ADD8.svg?logo=go)](https://golang.org/dl/)
 [![Built on khatru](https://img.shields.io/badge/built%20on-khatru-purple.svg)](https://khatru.nostr.technology)
 [![NIPs](https://img.shields.io/badge/NIPs-11%20·%2040%20·%2042%20·%2070-lightgrey.svg)](https://github.com/nostr-protocol/nips)
 
@@ -74,7 +75,7 @@ The default kind set is live-chat flavoured, but **it's entirely yours to config
 ## Prerequisites
 
 - **Go**: Ensure you have Go installed on your system. You can download it from [here](https://golang.org/dl/).
-- **Build Essentials**: If you're using Linux, you may need to install build essentials. You can do this by running `sudo apt install build-essential`.
+- **Build Essentials**: a C compiler is required (the LMDB storage backend uses cgo). On Linux: `sudo apt install build-essential`.
 
 ## Setup Instructions
 
@@ -102,7 +103,7 @@ cp .env.example .env
 | `RATE_LIMIT_EVENTS_PER_SEC` / `RATE_LIMIT_BURST` | `10` / `50` | Per-IP write rate limit |
 | `TRUSTED_IPS` | — | IPs exempt from the rate limit |
 | `PORT` | `3335` | Listen port |
-| `DB_PATH` | `db/` | Badger database path |
+| `DB_PATH` | `db/` | LMDB database path |
 | `RELAY_NAME` / `RELAY_PUBKEY` / `RELAY_ICON` / `RELAY_CONTACT` / `RELAY_DESCRIPTION` | — | NIP-11 identity (description auto-generated from retention settings unless set) |
 
 Some values are fixed on purpose:
@@ -231,6 +232,13 @@ curl -H 'Accept: application/nostr+json' https://chat.yourdomain.com
 
 The `relay` service will be accessible on port 7448 (mapped from the container's 3335).
 
+## Tests
+
+Unit and in-process integration tests (`go test ./...`) cover the policies,
+purge logic, rate limiter (with an injected clock), and a full websocket
+relay round-trip on the in-memory slicestore — they run in well under a
+second. CI runs them plus the protocol-level e2e below on every push.
+
 ## End-to-End Tests
 
 A protocol-level checker lives in `e2e/`. Point it at a relay running with short retention:
@@ -250,6 +258,9 @@ go run ./e2e -relay ws://localhost:3336 -nip70 # "-" events: author-only publish
 go run ./e2e -relay ws://localhost:3336 -burst-only # rate limiter caps an untrusted burst
 go run ./e2e -relay ws://localhost:3336 -burst-only -burst-trusted # TRUSTED_IPS bypass takes the full volley
 ```
+
+> [!IMPORTANT]
+> Run the two burst checks against a **locally-run binary**, as shown — the relay must see the client arrive from `127.0.0.1`. Behind docker port-mapping the client appears as the bridge gateway IP instead, which tests a different (weaker) case: the untrusted check can pass even if localhost traffic were accidentally exempt. Run as a pair on the same relay: the untrusted check proves localhost is *not* exempt, which is what makes the trusted check's 80/80 meaningful.
 
 ## License
 

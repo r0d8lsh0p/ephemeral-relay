@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 )
 
 var failures int
@@ -38,40 +38,35 @@ func check(name string, ok bool, detail string) {
 	fmt.Printf("FAIL  %s — %s\n", name, detail)
 }
 
-func publish(ctx context.Context, url string, sk string, kind int, content string, tags nostr.Tags) (string, error) {
-	relay, err := nostr.RelayConnect(ctx, url)
+func publish(ctx context.Context, url string, sk nostr.SecretKey, kind nostr.Kind, content string, tags nostr.Tags) (nostr.ID, error) {
+	relay, err := nostr.RelayConnect(ctx, url, nostr.RelayOptions{})
 	if err != nil {
-		return "", err
+		return nostr.ID{}, err
 	}
 	defer relay.Close()
 
-	pub, _ := nostr.GetPublicKey(sk)
 	evt := nostr.Event{
-		PubKey:    pub,
+		PubKey:    nostr.GetPublicKey(sk),
 		CreatedAt: nostr.Now(),
 		Kind:      kind,
 		Tags:      tags,
 		Content:   content,
 	}
 	if err := evt.Sign(sk); err != nil {
-		return "", err
+		return nostr.ID{}, err
 	}
 	return evt.ID, relay.Publish(ctx, evt)
 }
 
-func queryIDs(ctx context.Context, url string, filter nostr.Filter) (map[string]bool, error) {
-	relay, err := nostr.RelayConnect(ctx, url)
+func queryIDs(ctx context.Context, url string, filter nostr.Filter) (map[nostr.ID]bool, error) {
+	relay, err := nostr.RelayConnect(ctx, url, nostr.RelayOptions{})
 	if err != nil {
 		return nil, err
 	}
 	defer relay.Close()
 
-	events, err := relay.QuerySync(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
-	ids := make(map[string]bool, len(events))
-	for _, evt := range events {
+	ids := make(map[nostr.ID]bool)
+	for evt := range relay.QueryEvents(filter) {
 		ids[evt.ID] = true
 	}
 	return ids, nil
@@ -112,8 +107,8 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	chatterSK := nostr.GeneratePrivateKey()
-	chatterPK, _ := nostr.GetPublicKey(chatterSK)
+	chatterSK := nostr.Generate()
+	chatterPK := nostr.GetPublicKey(chatterSK)
 
 	// 1. kind 1 must be rejected
 	_, err := publish(ctx, *url, chatterSK, 1, "this should be refused", nil)
@@ -130,7 +125,7 @@ func main() {
 	check("kind 0 accepted", err == nil, fmt.Sprintf("publish failed: %v", err))
 
 	// both served right now
-	ids, err := queryIDs(ctx, *url, nostr.Filter{Authors: []string{chatterPK}})
+	ids, err := queryIDs(ctx, *url, nostr.Filter{Authors: []nostr.PubKey{chatterPK}})
 	if err != nil {
 		log.Fatalf("query failed: %v", err)
 	}
@@ -142,7 +137,7 @@ func main() {
 	fmt.Printf("...waiting %s for retention + purge...\n", wait)
 	time.Sleep(wait)
 
-	ids, err = queryIDs(ctx, *url, nostr.Filter{Authors: []string{chatterPK}})
+	ids, err = queryIDs(ctx, *url, nostr.Filter{Authors: []nostr.PubKey{chatterPK}})
 	if err != nil {
 		log.Fatalf("query failed: %v", err)
 	}
@@ -165,8 +160,8 @@ func runNip40Check(url string, ttlSecs int) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(ttlSecs)*time.Second+3*time.Minute)
 	defer cancel()
 
-	sk := nostr.GeneratePrivateKey()
-	pk, _ := nostr.GetPublicKey(sk)
+	sk := nostr.Generate()
+	pk := nostr.GetPublicKey(sk)
 	expiry := time.Now().Add(time.Duration(ttlSecs) * time.Second).Unix()
 
 	// already-expired events must be refused at the door
@@ -183,7 +178,7 @@ func runNip40Check(url string, ttlSecs int) {
 		nostr.Tags{{"a", "30311:deadbeef:nip40-stream"}})
 	check("control 1311 accepted", err == nil, fmt.Sprintf("publish failed: %v", err))
 
-	ids, err := queryIDs(ctx, url, nostr.Filter{Authors: []string{pk}})
+	ids, err := queryIDs(ctx, url, nostr.Filter{Authors: []nostr.PubKey{pk}})
 	if err != nil {
 		log.Fatalf("query failed: %v", err)
 	}
@@ -196,7 +191,7 @@ func runNip40Check(url string, ttlSecs int) {
 	gone := false
 	for time.Now().Before(deadline) {
 		time.Sleep(10 * time.Second)
-		ids, err = queryIDs(ctx, url, nostr.Filter{Authors: []string{pk}})
+		ids, err = queryIDs(ctx, url, nostr.Filter{Authors: []nostr.PubKey{pk}})
 		if err != nil {
 			log.Fatalf("poll query failed: %v", err)
 		}
@@ -221,9 +216,9 @@ func runNip70Check(url string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	authorSK := nostr.GeneratePrivateKey()
-	authorPK, _ := nostr.GetPublicKey(authorSK)
-	strangerSK := nostr.GeneratePrivateKey()
+	authorSK := nostr.Generate()
+	authorPK := nostr.GetPublicKey(authorSK)
+	strangerSK := nostr.Generate()
 
 	evt := nostr.Event{
 		PubKey:    authorPK,
@@ -237,7 +232,7 @@ func runNip70Check(url string) {
 	}
 
 	// 1. unauthenticated publish → auth-required
-	relay1, err := nostr.RelayConnect(ctx, url)
+	relay1, err := nostr.RelayConnect(ctx, url, nostr.RelayOptions{})
 	if err != nil {
 		log.Fatalf("connect failed: %v", err)
 	}
@@ -247,27 +242,27 @@ func runNip70Check(url string) {
 		fmt.Sprintf("expected auth-required, got %v", err))
 
 	// 2. authenticate as the author → accepted
-	err = relay1.Auth(ctx, func(authEvent *nostr.Event) error { return authEvent.Sign(authorSK) })
+	err = relay1.Auth(ctx, func(ctx context.Context, authEvent *nostr.Event) error { return authEvent.Sign(authorSK) })
 	check("author NIP-42 auth accepted", err == nil, fmt.Sprintf("auth failed: %v", err))
 	err = relay1.Publish(ctx, evt)
 	check("author can publish protected event", err == nil, fmt.Sprintf("publish failed: %v", err))
 	relay1.Close()
 
 	// 3. a different authenticated client rebroadcasts the same signed event → blocked
-	relay2, err := nostr.RelayConnect(ctx, url)
+	relay2, err := nostr.RelayConnect(ctx, url, nostr.RelayOptions{})
 	if err != nil {
 		log.Fatalf("connect failed: %v", err)
 	}
 	defer relay2.Close()
-	err = relay2.Publish(ctx, evt) // provoke the AUTH challenge
-	_ = relay2.Auth(ctx, func(authEvent *nostr.Event) error { return authEvent.Sign(strangerSK) })
+	_ = relay2.Publish(ctx, evt) // provoke the AUTH challenge
+	_ = relay2.Auth(ctx, func(ctx context.Context, authEvent *nostr.Event) error { return authEvent.Sign(strangerSK) })
 	err = relay2.Publish(ctx, evt)
 	check("rebroadcast by non-author refused",
 		err != nil && strings.Contains(err.Error(), "author"),
 		fmt.Sprintf("expected author-mismatch rejection, got %v", err))
 
 	// 4. the accepted event is served normally
-	ids, err := queryIDs(ctx, url, nostr.Filter{Authors: []string{authorPK}})
+	ids, err := queryIDs(ctx, url, nostr.Filter{Authors: []nostr.PubKey{authorPK}})
 	if err != nil {
 		log.Fatalf("query failed: %v", err)
 	}
@@ -278,22 +273,28 @@ func runNip70Check(url string) {
 // connection — simulating the bridge's single egress fanning in 50+ streams'
 // chat. Trusted mode expects zero rejections; untrusted expects the limiter
 // to bite (default burst allowance is 50).
+//
+// Run both modes against a locally-run relay binary so the client arrives
+// from 127.0.0.1: that makes the untrusted check prove localhost gets no
+// special exemption (a hardcoded one in an upstream limiter once slipped
+// through when this check only ran behind docker's NAT), and it's what makes
+// the trusted check's full acceptance attributable to TRUSTED_IPS.
 func runBurstCheck(url string, expectAllAccepted bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	relay, err := nostr.RelayConnect(ctx, url)
+	relay, err := nostr.RelayConnect(ctx, url, nostr.RelayOptions{})
 	if err != nil {
 		log.Fatalf("connect failed: %v", err)
 	}
 	defer relay.Close()
 
-	sk := nostr.GeneratePrivateKey()
-	pub, _ := nostr.GetPublicKey(sk)
+	sk := nostr.Generate()
+	pk := nostr.GetPublicKey(sk)
 	accepted, rejected := 0, 0
 	for i := 0; i < 80; i++ {
 		evt := nostr.Event{
-			PubKey:    pub,
+			PubKey:    pk,
 			CreatedAt: nostr.Now(),
 			Kind:      1311,
 			Tags:      nostr.Tags{{"a", "30311:deadbeef:burst-stream"}},
