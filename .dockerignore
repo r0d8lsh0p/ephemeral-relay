@@ -1,0 +1,4 @@
+db/
+ephemeral-relay
+.env
+.git
