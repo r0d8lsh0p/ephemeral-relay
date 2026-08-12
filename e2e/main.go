@@ -17,9 +17,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -80,6 +82,8 @@ func main() {
 	nip40 := flag.Bool("nip40", false, "only run the NIP-40 expiration check")
 	ttl := flag.Int("ttl", 180, "NIP-40 TTL in seconds for the expiring event")
 	nip70 := flag.Bool("nip70", false, "only run the NIP-70 protected-event check")
+	demand := flag.Bool("demand", false, "only run the demand-endpoint check")
+	authToken := flag.String("auth-token", "", "AUTH_TOKEN bearer for gated endpoints (tests auth when set)")
 	flag.Parse()
 
 	if *burstOnly {
@@ -98,6 +102,13 @@ func main() {
 	}
 	if *nip70 {
 		runNip70Check(*url)
+		if failures > 0 {
+			os.Exit(1)
+		}
+		return
+	}
+	if *demand {
+		runDemandCheck(*url, *authToken)
 		if failures > 0 {
 			os.Exit(1)
 		}
@@ -267,6 +278,106 @@ func runNip70Check(url string) {
 		log.Fatalf("query failed: %v", err)
 	}
 	check("protected event served", ids[evt.ID], "protected event missing from query")
+}
+
+// runDemandCheck verifies the GET /demand endpoint against a running relay
+// (start it with DEMAND_ENDPOINT=true): every open subscription appears as a
+// filter entry; a consumer selects the ones it cares about (here, by #a). A
+// firehose is present but unselectable; unsubscribing drops active to 0; with
+// a token configured, unauthenticated requests get 401.
+func runDemandCheck(url string, token string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	demandURL := strings.Replace(url, "ws", "http", 1) + "/demand"
+
+	type item struct {
+		Filter map[string]any `json:"filter"`
+		Active int            `json:"active"`
+	}
+	fetch := func(withToken bool) (int, []item) {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, demandURL, nil)
+		if withToken && token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Fatalf("GET /demand failed: %v", err)
+		}
+		defer resp.Body.Close()
+		var body struct {
+			Demand []item `json:"demand"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		return resp.StatusCode, body.Demand
+	}
+
+	hasA := func(it item, room string) bool {
+		vals, _ := it.Filter["#a"].([]any)
+		for _, v := range vals {
+			if v == room {
+				return true
+			}
+		}
+		return false
+	}
+	activeFor := func(room string) int {
+		_, items := fetch(true)
+		for _, it := range items {
+			if hasA(it, room) {
+				return it.Active
+			}
+		}
+		return -1
+	}
+
+	waitFor := func(cond func() bool, what string) {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if cond() {
+				check(what, true, "")
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		check(what, false, "timed out")
+	}
+
+	if token != "" {
+		status, _ := fetch(false)
+		check("demand endpoint rejects missing token", status == http.StatusUnauthorized,
+			fmt.Sprintf("status %d, want 401", status))
+	}
+	status, _ := fetch(true)
+	check("demand endpoint reachable", status == http.StatusOK, fmt.Sprintf("status %d", status))
+
+	relay, err := nostr.RelayConnect(ctx, url, nostr.RelayOptions{})
+	if err != nil {
+		log.Fatalf("connect: %v", err)
+	}
+	defer relay.Close()
+
+	const room = "30311:deadbeef:demand-e2e"
+
+	firehose, err := relay.Subscribe(ctx, nostr.Filter{Kinds: []nostr.Kind{1311}}, nostr.SubscriptionOptions{})
+	if err != nil {
+		log.Fatalf("firehose subscribe: %v", err)
+	}
+	defer firehose.Unsub()
+	waitFor(func() bool { _, items := fetch(true); return len(items) >= 1 }, "firehose appears as an entry")
+	check("firehose entry not selectable by #a", activeFor(room) == -1, "firehose matched #a selection")
+
+	sub, err := relay.Subscribe(ctx, nostr.Filter{
+		Kinds: []nostr.Kind{1311},
+		Tags:  nostr.TagMap{"a": []string{room}},
+	}, nostr.SubscriptionOptions{})
+	if err != nil {
+		log.Fatalf("scoped subscribe: %v", err)
+	}
+	waitFor(func() bool { return activeFor(room) == 1 }, "scoped subscription selectable with active=1")
+
+	sub.Unsub()
+	waitFor(func() bool { return activeFor(room) == 0 }, "unsubscribe drops active to 0")
 }
 
 // runBurstCheck publishes 80 chat events as fast as possible over one

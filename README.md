@@ -102,6 +102,10 @@ cp .env.example .env
 | `RETENTION_EXEMPT_KINDS` | `0` | Kinds kept indefinitely (profiles by default) |
 | `RATE_LIMIT_EVENTS_PER_SEC` / `RATE_LIMIT_BURST` | `10` / `50` | Per-IP write rate limit |
 | `TRUSTED_IPS` | — | IPs exempt from the rate limit |
+| `DEMAND_ENDPOINT` | `false` | Enable `GET /demand` (open-subscription introspection) |
+| `DEMAND_KINDS` | — (any) | Only track subscriptions asking for these kinds |
+| `DEMAND_STALE_SECONDS` | `600` | How long a zero-subscriber entry stays in the response |
+| `AUTH_TOKEN` | — | If set, gated HTTP endpoints (currently `/demand`) require `Authorization: Bearer <token>` |
 | `PORT` | `3335` | Listen port |
 | `DB_PATH` | `db/` | LMDB database path |
 | `RELAY_NAME` / `RELAY_PUBKEY` / `RELAY_ICON` / `RELAY_CONTACT` / `RELAY_DESCRIPTION` | — | NIP-11 identity (description auto-generated from retention settings unless set) |
@@ -112,9 +116,6 @@ Some values are fixed on purpose:
 |---|---|---|
 | Ephemeral-range wildcard | off | khatru's kind policy can blanket-admit all of NIP-01's ephemeral range (20000–29999); that would undercut the *limited* posture. Want a specific ephemeral kind? Put its number in `ALLOWED_KINDS`. |
 | Timestamp sanity window | 2 h past / 30 min future | Events dated outside this window are rejected so that back-dating or forward-dating cannot be used to avoid deletion. |
-
-> [!NOTE]
-> The expected use of `TRUSTED_IPS` is colocating this relay with a **bridge**: a bridge funnels many streams' chat through a single egress IP and would otherwise be throttled like one anonymous client. On a platform like Railway, run relay and bridge in the same project and whitelist the bridge's private-network address.
 
 > [!IMPORTANT]
 > NIP-40 can only *shorten* an event's life. A distant expiration does not exempt an event from `RETENTION_SECONDS` — the blanket window always wins.
@@ -231,6 +232,31 @@ curl -H 'Accept: application/nostr+json' https://chat.yourdomain.com
    ```
 
 The `relay` service will be accessible on port 7448 (mapped from the container's 3335).
+
+## Bots and bridges
+
+If you run your own software against this relay — such as a bot or a bridge — two features help. Neither changes behaviour for ordinary clients.
+
+### `TRUSTED_IPS` — exempt your own services from the rate limit
+
+A bridge relaying fifty chat rooms arrives from one IP and would be
+throttled like one very chatty client. List its address in `TRUSTED_IPS` to
+exempt it. Everyone else stays metered. On a platform like Railway,
+whitelist your service's private-network address, which is stable.
+
+### `GET /demand` — see what clients are subscribed to
+
+With `DEMAND_ENDPOINT=true`, the relay reports the REQs currently
+open on it, so your service can do expensive work only while someone is
+listening. For example, a bridge joins a third-party chat room only while some client is subscribed to that room's chat.
+
+```bash
+curl -s -H "Authorization: Bearer $AUTH_TOKEN" http://localhost:3335/demand
+# {"demand":[{"filter":{"kinds":[1311],"#a":["30311:<pubkey>:<d>"]},"active":2,"last_seen":"..."}]}
+```
+
+The response reveals what clients are subscribed to — on a public relay,
+leave the endpoint off, set `AUTH_TOKEN`, or gate it at your proxy.
 
 ## Tests
 
